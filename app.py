@@ -26,23 +26,31 @@ MAX_MB = int(st.secrets.get("limits", {}).get("MAX_FILE_MB", 5))
 MAX_PGS = int(st.secrets.get("limits", {}).get("MAX_PAGES", 8))
 
 # ---------- Helpers OpenAI (clé/clients) ----------
+import os
+import streamlit as st
+
 def _get_openai_key() -> str:
-    # 1) section [llm] des Secrets
+    """Récupère la clé depuis Secrets ([llm] ou top-level) ou l'ENV. Toujours une str propre."""
     key = (st.secrets.get("llm", {}) or {}).get("OPENAI_API_KEY")
-    # 2) top-level des Secrets
     key = key or st.secrets.get("OPENAI_API_KEY")
-    # 3) variable d’environnement
     key = key or os.getenv("OPENAI_API_KEY")
+    if key is None:
+        return ""
+    if isinstance(key, bytes):
+        key = key.decode("utf-8", "ignore")
+    key = str(key).strip()
     return key
 
 def _get_openai_client():
-    from openai import OpenAI
+    """Valide la clé, la met dans l'ENV, puis crée le client sans arguments."""
     key = _get_openai_key()
-    if not key:
-        st.error("OPENAI_API_KEY manquante. Ajoute-la dans Settings → Secrets (top-level OU [llm]).")
-        raise RuntimeError("Missing OPENAI_API_KEY")
-    os.environ["OPENAI_API_KEY"] = key  # exposition au SDK
-    return OpenAI(api_key=key)
+    if not key or not isinstance(key, str) or not key.startswith("sk-"):
+        st.error("OPENAI_API_KEY absente ou invalide. Ajoute-la dans Settings → Secrets (avec des guillemets).")
+        raise RuntimeError("Invalid or missing OPENAI_API_KEY")
+    os.environ["OPENAI_API_KEY"] = key  # le SDK la lira automatiquement
+    from openai import OpenAI
+    return OpenAI()  # <-- IMPORTANT: aucun argument ici
+
 
 # ---------- Outils communs (lecture fichiers/texte) ----------
 def _extract_text_pdf_bytes(b: bytes, max_pages=MAX_PGS) -> str:
@@ -453,6 +461,10 @@ Contraintes: Style pro, FR, phrases courtes. Conclure par une recommandation."""
 tab1, tab2, tab3 = st.tabs(["1) Fiche projet → spec", "2) Analyse CV", "3) Démo (cellule 10)"])
 
 with tab1:
+        _key_dbg = _get_openai_key()
+    _mask = (_key_dbg[:3] + "…" + _key_dbg[-4:]) if _key_dbg else "—"
+    st.caption("🔐 Clé OpenAI détectée : " + ("oui (" + _mask + ")" if _key_dbg else "non"))
+
     st.caption("🔐 Clé OpenAI chargée : " + ("oui" if _get_openai_key() else "non"))
     mode = st.radio("Mode d'entrée fiche projet", ["UPLOAD_DOC", "UPLOAD_JSON", "MANUAL"], horizontal=True)
     sp_file = None
