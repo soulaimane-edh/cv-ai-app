@@ -461,15 +461,22 @@ Contraintes: Style pro, FR, phrases courtes. Conclure par une recommandation."""
 tab1, tab2, tab3 = st.tabs(["1) Fiche projet → spec", "2) Analyse CV", "3) Démo (cellule 10)"])
 
 with tab1:
-        _key_dbg = _get_openai_key()
+    _key_dbg = _get_openai_key()
     _mask = (_key_dbg[:3] + "…" + _key_dbg[-4:]) if _key_dbg else "—"
     st.caption("🔐 Clé OpenAI détectée : " + ("oui (" + _mask + ")" if _key_dbg else "non"))
 
-    st.caption("🔐 Clé OpenAI chargée : " + ("oui" if _get_openai_key() else "non"))
-    mode = st.radio("Mode d'entrée fiche projet", ["UPLOAD_DOC", "UPLOAD_JSON", "MANUAL"], horizontal=True)
+    mode = st.radio(
+        "Mode d'entrée fiche projet",
+        ["UPLOAD_DOC", "UPLOAD_JSON", "MANUAL"],
+        horizontal=True,
+    )
+
     sp_file = None
     if mode in ("UPLOAD_DOC", "UPLOAD_JSON"):
-        sp_file = st.file_uploader("Fiche projet (PDF/DOCX/TXT ou JSON)", type=["pdf", "docx", "txt", "json"])
+        sp_file = st.file_uploader(
+            "Fiche projet (PDF/DOCX/TXT ou JSON)",
+            type=["pdf", "docx", "txt", "json"],
+        )
 
     if st.button("Construire la spec (cellule 3)"):
         if mode == "MANUAL":
@@ -485,7 +492,8 @@ with tab1:
                 "poids": {"must_have": 40, "nice_to_have": 15, "experience": 15, "langues": 10, "diplomes_certifs": 10, "localisation_dispo": 10},
             })
         elif not sp_file:
-            st.error("Charge un fichier."); st.stop()
+            st.error("Charge un fichier.")
+            st.stop()
         elif sp_file.name.lower().endswith(".json"):
             raw = json.loads(sp_file.read().decode("utf-8", errors="ignore"))
             spec = validate_fill_spec(raw)
@@ -505,6 +513,7 @@ with tab1:
             "spec_active.json",
             "application/json",
         )
+
 
 with tab2:
     spec = st.session_state.get("spec")
