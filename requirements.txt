@@ -3,6 +3,11 @@ pypdf==4.3.1
 python-docx==1.1.2
 rapidfuzz==3.9.3
 pandas==2.2.2
+
+# NLP
 sentence-transformers==3.0.1
-pyjwt==2.9.0
-openai==1.40.3   # si tu utilises un LLM; sinon tu peux enlever cette ligne
+transformers==4.42.3
+safetensors==0.4.3
+
+# PyTorch CPU
+torch==2.3.1
