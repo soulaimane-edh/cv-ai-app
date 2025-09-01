@@ -3,9 +3,11 @@ pypdf==4.3.1
 python-docx==1.1.2
 rapidfuzz==3.9.3
 pandas==2.2.2
-scikit-learn==1.4.2
+# Embeddings + dépendances
 sentence-transformers==3.0.1
 transformers==4.42.3
 safetensors==0.4.3
 torch==2.3.1
+numpy==1.26.4
+# Appels LLM (cellules 3,5,9)
 openai==1.40.3
