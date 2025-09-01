@@ -3,7 +3,8 @@ pypdf==4.3.1
 python-docx==1.1.2
 pandas==2.2.2
 requests==2.32.3
-# Embeddings (activer via le toggle)
+rapidfuzz==3.9.6
+# Embeddings (toggle dans l'app)
 sentence-transformers==3.0.1
 transformers==4.42.3
 safetensors==0.4.3
