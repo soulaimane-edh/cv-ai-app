@@ -8,6 +8,21 @@ from pypdf import PdfReader
 from docx import Document
 from rapidfuzz import fuzz
 
+
+
+
+def gpt_build_spec_from_text(fiche_texte: str, model_id: str = None) -> dict:
+    client = _get_openai_client()
+    model_id = model_id or MODEL_ID
+    msgs = [{"role":"system","content":SPEC_SYSTEM},{"role":"user","content":fiche_texte}]
+    r = client.chat.completions.create(model=model_id, messages=msgs, temperature=0, max_tokens=700)
+    ...
+
+
+
+
+
+
 st.set_page_config(page_title="Analyse de CV (Notebook → App)", layout="wide")
 st.title("Analyse de CV — reprise du notebook (10 cellules)")
 
@@ -103,11 +118,14 @@ Règles :
 """
 
 def gpt_build_spec_from_text(fiche_texte: str, model_id: str = None) -> dict:
-    from openai import OpenAI
-    client = OpenAI(api_key=st.secrets.get("llm",{}).get("OPENAI_API_KEY"))
+     from openai import OpenAI
+
+    client = _get_openai_client()
     model_id = model_id or MODEL_ID
     msgs = [{"role":"system","content":SPEC_SYSTEM},{"role":"user","content":fiche_texte}]
     r = client.chat.completions.create(model=model_id, messages=msgs, temperature=0, max_tokens=700)
+    
+
     txt = r.choices[0].message.content.strip()
     m = re.search(r"\{.*\}", txt, flags=re.S)
     if not m: raise ValueError("JSON non trouvé dans la réponse du modèle.")
@@ -161,7 +179,7 @@ def gpt_extract_profile_safe(cv_text: str, model_id: str = MODEL_ID) -> dict:
       Sinon -> 'diplomes_en_cours'. Ne déduis pas Master/Ingénieur/Bac+5 à partir d'un cycle en cours.
     """
     from openai import OpenAI
-    client = OpenAI(api_key=key)
+    client = _get_openai_client()
     msgs = [{"role":"system","content":SYSTEM},{"role":"user","content":cv_text[:120000]}]
     r = client.chat.completions.create(model=model_id, messages=msgs, temperature=0, max_tokens=900)
     raw = r.choices[0].message.content.strip()
@@ -347,7 +365,7 @@ Données:
 - Détails règles: {details_autres}
 Contraintes: Style pro, FR, phrases courtes. Conclure par une recommandation."""
     from openai import OpenAI
-    client = OpenAI(api_key=key)
+    client = _get_openai_client()
     resp = client.chat.completions.create(
         model=model_id,
         messages=[{"role":"user","content":prompt}],
