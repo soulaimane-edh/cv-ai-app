@@ -86,7 +86,7 @@ st.set_page_config(page_title="Analyse de CV (Notebook → App)", layout="wide")
 st.title("Analyse de CV — reprise fidèle du notebook")
 
 # ----------------- Constantes -----------------
-MODEL_ID  = "gpt-4o-mini"
+MODEL_ID  = "gpt-5-nano"
 EMB_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 RANDOM_SEED = 42
 
