@@ -1,6 +1,7 @@
 # =========================================================
 # APP STREAMLIT = NOTEBOOK (10 cellules) → APPLICATION
 # Version sans SDK OpenAI (appel HTTP via requests)
+# Scoring normalisé à 100 via spec["poids"]
 # =========================================================
 import io
 import os
@@ -74,6 +75,24 @@ def clean_text_soft(t: str) -> str:
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n{3,}", "\n\n", t).strip()
     return t
+
+# ----------------- Poids normalisés (somme = 100) -----------------
+def get_weights(spec: dict) -> dict:
+    """Récupère et normalise les poids (somme 100)."""
+    base = {
+        "must_have": 40,
+        "nice_to_have": 15,
+        "experience": 15,
+        "langues": 10,
+        "diplomes_certifs": 10,
+        "localisation_dispo": 10,
+    }
+    p = dict(base)
+    p.update(spec.get("poids", {}) or {})
+    total = sum(p.values()) or 100
+    for k in p:
+        p[k] = 100.0 * p[k] / total
+    return p
 
 # ----------------- Cellule 3 : FICHE PROJET -> JSON spec -----------------
 DEFAULT_SPEC = {
@@ -259,7 +278,7 @@ def fill_with_regex_if_missing(extraction: dict, cv_text: str) -> dict:
             extraction["disponibilite_semaines"] = {"value": v, "evidence": []}
     return extraction
 
-# ----------------- Cellule 6 : Embeddings + scoring -----------------
+# ----------------- Cellule 6 : Embeddings + scoring (normalisé) -----------------
 USE_EMB = st.toggle("Activer embeddings (S-BERT) — nécessite torch", value=False)
 
 @st.cache_resource
@@ -268,10 +287,16 @@ def get_emb_model():
     return SentenceTransformer(EMB_MODEL)
 
 def score_competences_embeddings(cv_text: str, spec: dict, emb_model=None):
+    """Retourne les points pour must/nice en utilisant les poids normalisés de la spec."""
+    W = get_weights(spec)
+    w_must = W["must_have"]
+    w_nice = W["nice_to_have"]
+
     must = [s.strip() for s in spec.get("must_have", []) if s.strip()]
     nice = [s.strip() for s in spec.get("nice_to_have", []) if s.strip()]
     evid = {"must": [], "nice": []}
 
+    # --- voie embeddings ---
     if emb_model is not None:
         from sentence_transformers import util
         cv_vec = emb_model.encode(cv_text, normalize_embeddings=True)
@@ -291,14 +316,12 @@ def score_competences_embeddings(cv_text: str, spec: dict, emb_model=None):
             evid["nice"].append((sk, s, sk if s >= 0.22 else ""))
             ns += s
 
-        pts = 0.0
-        if must:
-            pts += min(1.0, ms / len(must)) * 60
-        if nice:
-            pts += min(1.0, ns / len(nice)) * 40
+        ms_avg = (ms / len(must)) if must else 0.0
+        ns_avg = (ns / len(nice)) if nice else 0.0
+        pts = min(1.0, ms_avg) * w_must + min(1.0, ns_avg) * w_nice
         return round(pts, 2), evid
 
-    # Fallback mots-clés (léger)
+    # --- fallback mots-clés ---
     low = cv_text.lower()
     mh = sum(1 for sk in must if sk.lower() in low)
     nh = sum(1 for sk in nice if sk.lower() in low)
@@ -306,57 +329,53 @@ def score_competences_embeddings(cv_text: str, spec: dict, emb_model=None):
         evid["must"].append((sk, 1.0 if sk.lower() in low else 0.0, sk if sk.lower() in low else ""))
     for sk in nice:
         evid["nice"].append((sk, 1.0 if sk.lower() in low else 0.0, sk if sk.lower() in low else ""))
-    pts = 0.0
-    if must:
-        pts += (mh / len(must)) * 60
-    if nice:
-        pts += (nh / len(nice)) * 40
+    ms_avg = (mh / len(must)) if must else 0.0
+    ns_avg = (nh / len(nice)) if nice else 0.0
+    pts = min(1.0, ms_avg) * w_must + min(1.0, ns_avg) * w_nice
     return round(pts, 2), evid
 
-# ----------------- Cellule 8 : Règles & commentaire -----------------
+# ----------------- Cellule 8 : Règles (normalisé) & commentaire -----------------
 def score_autres_criteres(extract: dict, spec: dict):
-    p = spec.get("poids", {})
-    w_exp = p.get("experience", 10)
-    w_lang = p.get("langues", 5)
-    w_dc = p.get("diplomes_certifs", 3)
-    w_loc = p.get("localisation_dispo", 2)
+    """Calcule les points des règles en utilisant les poids normalisés de la spec."""
+    W = get_weights(spec)
+    w_exp  = W["experience"]
+    w_lang = W["langues"]
+    w_dc   = W["diplomes_certifs"]
+    w_loc  = W["localisation_dispo"]
+
     score = 0.0
     details = {}
 
+    # expérience
     need = spec.get("experience_min_ans", None)
-    yrs = extract.get("experience_ans", {}).get("value")
-    if isinstance(need, (int, float)) and isinstance(yrs, (int, float)):
-        part = min(1.0, yrs / max(1, need)) * w_exp
-        score += part
-        details["experience"] = round(part, 2)
+    yrs  = extract.get("experience_ans", {}).get("value")
+    if isinstance(need, (int, float)) and isinstance(yrs, (int, float)) and need > 0:
+        part = min(1.0, yrs / need) * w_exp
+        score += part; details["experience"] = round(part, 2)
 
-    have = {l.get("code"): (l.get("niveau") or "").upper() for l in extract.get("langues", [])}
-    need_langs = spec.get("langues", {})
-    if isinstance(need_langs, dict) and need_langs:
-        ok = 0
-        tot = 0
-        for code in need_langs.keys():
-            tot += 1
-            if code.lower() in (have or {}):
-                ok += 1
-        if tot:
-            part = (ok / tot) * w_lang
-            score += part
-            details["langues"] = round(part, 2)
+    # langues (présence des codes demandés)
+    have = { (l.get("code") or "").lower(): (l.get("niveau") or "").upper()
+             for l in extract.get("langues", []) }
+    need_langs = spec.get("langues", {}) or {}
+    if need_langs:
+        ok = sum(1 for code in need_langs.keys() if code.lower() in have)
+        tot = len(need_langs)
+        part = (ok / tot) * w_lang if tot else 0.0
+        score += part; details["langues"] = round(part, 2)
 
+    # diplômes/certifs (au moins un)
     d = len(extract.get("diplomes_obtenus", []) or [])
     c = len(extract.get("certifications", []) or [])
-    if d + c > 0:
-        score += w_dc
-        details["diplomes_certifs"] = w_dc
+    if (d + c) > 0:
+        score += w_dc; details["diplomes_certifs"] = round(w_dc, 2)
 
+    # disponibilité <= max
     dmax = spec.get("disponibilite_max_semaines", None)
     dval = extract.get("disponibilite_semaines", {}).get("value")
     if isinstance(dmax, (int, float)) and isinstance(dval, (int, float)) and dval <= dmax:
-        score += w_loc
-        details["localisation_dispo"] = w_loc
+        score += w_loc; details["localisation_dispo"] = round(w_loc, 2)
 
-    com = "Règles: exp/langues/diplômes/certifs/dispo agrégés."
+    com = "Règles pondérées par la spec (exp/langues/diplômes-certifs/dispo)."
     return round(score, 2), com, details
 
 def build_commentaire_deterministe(score_final, evidences, extraction, spec):
@@ -518,7 +537,8 @@ with tab2:
                 emb_model = get_emb_model() if USE_EMB else None
                 pts_mn, evidences = score_competences_embeddings(cv_text, spec, emb_model)
                 pts_autres, com_autres, details_autres = score_autres_criteres(extraction, spec)
-                score_final = round(pts_mn + pts_autres, 2)
+                # >>> clamp (sécurité)
+                score_final = round(min(100.0, pts_mn + pts_autres), 2)
                 comment_rh = gpt_commentaire(score_final, evidences, details_autres, MODEL_ID) if want_llm_comment else ""
                 rows.append({
                     "fichier": f.name,
@@ -568,6 +588,6 @@ Diplômes: Licence Informatique (2021)
         ext = fill_with_regex_if_missing(ext, cv_demo)
         pts_mn, evid = score_competences_embeddings(cv_demo, spec_demo, get_emb_model() if USE_EMB else None)
         pts_autres, com_autres, det_autres = score_autres_criteres(ext, spec_demo)
-        score = round(pts_mn + pts_autres, 2)
+        score = round(min(100.0, pts_mn + pts_autres), 2)
         st.metric("SCORE_FINAL (demo)", f"{score} %")
         st.text(build_commentaire_deterministe(score, evid, ext, spec_demo))
