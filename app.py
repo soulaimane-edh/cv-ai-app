@@ -1,58 +1,52 @@
 # =========================================================
-# APP STREAMLIT = REPRISE DU NOTEBOOK (10 CELLULES)
+# APP STREAMLIT = NOTEBOOK (10 cellules) → APPLICATION
+# Version sans SDK OpenAI (appel HTTP via requests)
 # =========================================================
 import io
 import os
 import re
 import json
 import time
+import requests
 import streamlit as st
 import pandas as pd
 from pypdf import PdfReader
 from docx import Document
-from rapidfuzz import fuzz
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 
-# ---------- Config UI ----------
+# ----------------- Config UI -----------------
 st.set_page_config(page_title="Analyse de CV (Notebook → App)", layout="wide")
 st.title("Analyse de CV — reprise du notebook (10 cellules)")
 
-# ---------- Cellule 1 : Setup & variables ----------
+# ----------------- Cellule 1 : Setup & variables -----------------
 MODEL_ID = "gpt-4o-mini"
 EMB_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 RANDOM_SEED = 42
 MAX_MB = int(st.secrets.get("limits", {}).get("MAX_FILE_MB", 5))
 MAX_PGS = int(st.secrets.get("limits", {}).get("MAX_PAGES", 8))
 
-# ---------- Helpers OpenAI (clé/clients) ----------
-import os
-import streamlit as st
-
+# ----------------- Helpers OpenAI (clé + HTTP) -----------------
 def _get_openai_key() -> str:
-    """Récupère la clé depuis Secrets ([llm] ou top-level) ou l'ENV. Toujours une str propre."""
+    """Récupère la clé (Secrets [llm] OU top-level OU ENV)."""
     key = (st.secrets.get("llm", {}) or {}).get("OPENAI_API_KEY")
     key = key or st.secrets.get("OPENAI_API_KEY")
     key = key or os.getenv("OPENAI_API_KEY")
-    if key is None:
-        return ""
-    if isinstance(key, bytes):
-        key = key.decode("utf-8", "ignore")
-    key = str(key).strip()
-    return key
+    return (str(key).strip() if key else "")
 
-def _get_openai_client():
-    """Valide la clé, la met dans l'ENV, puis crée le client sans arguments."""
+def _chat_completion(model: str, messages: list, temperature: float = 0, max_tokens: int = 700) -> str:
+    """Appel direct à l’API Chat Completions d’OpenAI (sans SDK)."""
     key = _get_openai_key()
-    if not key or not isinstance(key, str) or not key.startswith("sk-"):
-        st.error("OPENAI_API_KEY absente ou invalide. Ajoute-la dans Settings → Secrets (avec des guillemets).")
-        raise RuntimeError("Invalid or missing OPENAI_API_KEY")
-    os.environ["OPENAI_API_KEY"] = key  # le SDK la lira automatiquement
-    from openai import OpenAI
-    return OpenAI()  # <-- IMPORTANT: aucun argument ici
+    if not key or not key.startswith("sk-"):
+        raise RuntimeError("OPENAI_API_KEY absente ou invalide (Settings → Secrets).")
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+    resp = requests.post(url, headers=headers, json=payload, timeout=60)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"OpenAI HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    return data["choices"][0]["message"]["content"]
 
-
-# ---------- Outils communs (lecture fichiers/texte) ----------
+# ----------------- Outils communs (lecture fichiers/texte) -----------------
 def _extract_text_pdf_bytes(b: bytes, max_pages=MAX_PGS) -> str:
     r = PdfReader(io.BytesIO(b))
     pages = r.pages[:max_pages]
@@ -81,7 +75,7 @@ def clean_text_soft(t: str) -> str:
     t = re.sub(r"\n{3,}", "\n\n", t).strip()
     return t
 
-# ---------- Cellule 3 : FICHE PROJET -> JSON spec ----------
+# ----------------- Cellule 3 : FICHE PROJET -> JSON spec -----------------
 DEFAULT_SPEC = {
     "must_have": [],
     "nice_to_have": [],
@@ -153,18 +147,12 @@ Règles :
 """
 
 def gpt_build_spec_from_text(fiche_texte: str, model_id: str = None) -> dict:
-    client = _get_openai_client()
     model_id = model_id or MODEL_ID
-
     msgs = [
         {"role": "system", "content": SPEC_SYSTEM},
         {"role": "user", "content": fiche_texte},
     ]
-
-    r = client.chat.completions.create(
-        model=model_id, messages=msgs, temperature=0, max_tokens=700
-    )
-    txt = r.choices[0].message.content.strip()
+    txt = _chat_completion(model_id, msgs, temperature=0, max_tokens=700).strip()
     m = re.search(r"\{.*\}", txt, flags=re.S)
     if not m:
         raise ValueError("JSON non trouvé dans la réponse du modèle.")
@@ -176,7 +164,7 @@ def gpt_build_spec_from_text(fiche_texte: str, model_id: str = None) -> dict:
         cleaned = re.sub(r",\s*]", "]", cleaned)
         return json.loads(cleaned)
 
-# ---------- Cellule 4 : LECTURE CV (via upload) ----------
+# ----------------- Cellule 4 : LECTURE CV (upload) -----------------
 def read_cv_text_from_upload(file) -> str:
     name = file.name.lower()
     raw = file.read()
@@ -190,9 +178,9 @@ def read_cv_text_from_upload(file) -> str:
         raise ValueError("Format non supporté (PDF/DOCX/TXT).")
     return clean_text_soft(txt)
 
-# ---------- Cellule 5 : Extraction safe (profil) ----------
+# ----------------- Cellule 5 : Extraction safe (profil) -----------------
 def gpt_extract_profile_safe(cv_text: str, model_id: str = MODEL_ID) -> dict:
-    # si pas de clé, renvoyer un squelette vide (fallback regex ensuite)
+    # Fallback si pas de clé → squelette vide (regex ensuite)
     if not _get_openai_key():
         return {
             "experience_ans": {"value": None, "evidence": []},
@@ -221,10 +209,8 @@ def gpt_extract_profile_safe(cv_text: str, model_id: str = MODEL_ID) -> dict:
     - Diplômes : mets dans 'diplomes_obtenus' SEULEMENT les diplômes déjà obtenus (mention 'diplômé/obtenu/graduated' ou année).
       Sinon -> 'diplomes_en_cours'. Ne déduis pas Master/Ingénieur/Bac+5 à partir d'un cycle en cours.
     """
-    client = _get_openai_client()
     msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": cv_text[:120000]}]
-    r = client.chat.completions.create(model=model_id, messages=msgs, temperature=0, max_tokens=900)
-    raw = r.choices[0].message.content.strip()
+    raw = _chat_completion(model_id, msgs, temperature=0, max_tokens=900).strip()
     m = re.search(r"\{.*\}", raw, flags=re.S)
     js = m.group(0) if m else "{}"
     try:
@@ -273,7 +259,7 @@ def fill_with_regex_if_missing(extraction: dict, cv_text: str) -> dict:
             extraction["disponibilite_semaines"] = {"value": v, "evidence": []}
     return extraction
 
-# ---------- Cellule 6 : Embeddings + scoring compétences ----------
+# ----------------- Cellule 6 : Embeddings + scoring -----------------
 USE_EMB = st.toggle("Activer embeddings (S-BERT) — nécessite torch", value=False)
 
 @st.cache_resource
@@ -286,7 +272,6 @@ def score_competences_embeddings(cv_text: str, spec: dict, emb_model=None):
     nice = [s.strip() for s in spec.get("nice_to_have", []) if s.strip()]
     evid = {"must": [], "nice": []}
 
-    # Embeddings si emb_model fourni, sinon fallback mots-clés
     if emb_model is not None:
         from sentence_transformers import util
         cv_vec = emb_model.encode(cv_text, normalize_embeddings=True)
@@ -313,7 +298,7 @@ def score_competences_embeddings(cv_text: str, spec: dict, emb_model=None):
             pts += min(1.0, ns / len(nice)) * 40
         return round(pts, 2), evid
 
-    # Fallback : présence des mots (léger)
+    # Fallback mots-clés (léger)
     low = cv_text.lower()
     mh = sum(1 for sk in must if sk.lower() in low)
     nh = sum(1 for sk in nice if sk.lower() in low)
@@ -328,7 +313,7 @@ def score_competences_embeddings(cv_text: str, spec: dict, emb_model=None):
         pts += (nh / len(nice)) * 40
     return round(pts, 2), evid
 
-# ---------- Cellule 8 : Règles & commentaire ----------
+# ----------------- Cellule 8 : Règles & commentaire -----------------
 def score_autres_criteres(extract: dict, spec: dict):
     p = spec.get("poids", {})
     w_exp = p.get("experience", 10)
@@ -418,7 +403,7 @@ def build_commentaire_deterministe(score_final, evidences, extraction, spec):
         bullets.append(f"• {sk} (sim={sim:.3f}) — « {phr[:120]}… »" if phr else f"• {sk} (sim={sim:.3f})")
 
     com = []
-    com.append(f"Le candidat obtient un score final de {score_final:.2f} %.") 
+    com.append(f"Le candidat obtient un score final de {score_final:.2f} %.")
     com.append("Compétences évaluées :")
     com.extend(bullets if bullets else ["• Aucune preuve forte détectée."])
     com.append(f"Expérience : {exp_txt} (objectif fiche : {target_txt}).")
@@ -428,7 +413,7 @@ def build_commentaire_deterministe(score_final, evidences, extraction, spec):
     com.append(f"Recommandation automatique : {decision_band(score_final)}.")
     return "\n".join(com)
 
-# ---------- Cellule 9 : Commentaire RH (LLM, option) ----------
+# ----------------- Cellule 9 : Commentaire RH (LLM, option) -----------------
 def gpt_commentaire(score: float, evidences, details_autres, model_id: str = MODEL_ID) -> str:
     if not _get_openai_key():
         return "(LLM inactif : ajouter OPENAI_API_KEY dans Secrets)"
@@ -448,16 +433,10 @@ Données:
 - Preuves nice (top): {top_nice}
 - Détails règles: {details_autres}
 Contraintes: Style pro, FR, phrases courtes. Conclure par une recommandation."""
-    client = _get_openai_client()
-    resp = client.chat.completions.create(
-        model=model_id,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-        max_tokens=220,
-    )
-    return resp.choices[0].message.content.strip()
+    msgs = [{"role": "user", "content": prompt}]
+    return _chat_completion(model_id, msgs, temperature=0.2, max_tokens=220).strip()
 
-# ---------- UI (onglets) ----------
+# ----------------- UI (onglets) -----------------
 tab1, tab2, tab3 = st.tabs(["1) Fiche projet → spec", "2) Analyse CV", "3) Démo (cellule 10)"])
 
 with tab1:
@@ -514,13 +493,16 @@ with tab1:
             "application/json",
         )
 
-
 with tab2:
     spec = st.session_state.get("spec")
     if not spec:
         st.info("➡️ Va d'abord dans l'onglet 1 pour générer/charger la fiche projet (spec).")
     else:
-        files = st.file_uploader("CV (PDF/DOCX/TXT) — multiples autorisés", type=["pdf", "docx", "txt"], accept_multiple_files=True)
+        files = st.file_uploader(
+            "CV (PDF/DOCX/TXT) — multiples autorisés",
+            type=["pdf", "docx", "txt"],
+            accept_multiple_files=True,
+        )
         want_llm_comment = st.checkbox("Générer un commentaire RH (LLM)")
         if files and st.button("Analyser (cellules 4→9)"):
             rows = []
@@ -530,17 +512,13 @@ with tab2:
                     continue
                 t0 = time.time()
                 cv_text = read_cv_text_from_upload(f)
-                # cellule 5
                 extraction = gpt_extract_profile_safe(cv_text, model_id=MODEL_ID)
                 extraction = enforce_evidence(extraction, cv_text)
                 extraction = fill_with_regex_if_missing(extraction, cv_text)
-                # cellule 6
                 emb_model = get_emb_model() if USE_EMB else None
                 pts_mn, evidences = score_competences_embeddings(cv_text, spec, emb_model)
-                # cellule 8
                 pts_autres, com_autres, details_autres = score_autres_criteres(extraction, spec)
                 score_final = round(pts_mn + pts_autres, 2)
-                # cellule 9 (option)
                 comment_rh = gpt_commentaire(score_final, evidences, details_autres, MODEL_ID) if want_llm_comment else ""
                 rows.append({
                     "fichier": f.name,
