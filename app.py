@@ -19,6 +19,68 @@ from typing import Dict, Any, Tuple, List
 from pypdf import PdfReader
 from docx import Document
 
+
+
+
+
+
+
+
+
+
+
+
+def offline_extract_from_text(cv_text: str) -> dict:
+    """Extraction locale minimaliste (regex) quand le LLM est indisponible."""
+    data = {
+        "experience_ans": {"value": None, "evidence": []},
+        "disponibilite_semaines": {"value": None, "evidence": []},
+        "langues": [],
+        "diplomes_obtenus": [],
+        "diplomes_en_cours": [],
+        "certifications": [],
+        "localisation": {"value": "", "evidence": []},
+    }
+    # Expérience (ex: "2 ans", "3 years")
+    m = re.search(r"(\d+)\s*(ans|year|years)", cv_text, flags=re.I)
+    if m:
+        data["experience_ans"]["value"] = float(m.group(1))
+
+    # Disponibilité (ex: "2 semaines", "2 weeks")
+    m = re.search(r"(\d+)\s*(semaines?|weeks?)", cv_text, flags=re.I)
+    if m:
+        data["disponibilite_semaines"]["value"] = float(m.group(1))
+
+    # Langues (FR/EN/DE/ES/AR/IT) + niveau CEFR (A1..C2) s’il est écrit entre () ou après
+    langs = []
+    for code in ["fr", "en", "de", "es", "ar", "it"]:
+        p = re.search(rf"\b{code}\b[^A-Z0-9]*\(?\s*(A1|A2|B1|B2|C1|C2)\s*\)?", cv_text, flags=re.I)
+        if p:
+            langs.append({"code": code, "niveau": p.group(1).upper(), "evidence": []})
+    data["langues"] = langs
+
+    # Localisation (ligne "Localisation: Rabat")
+    m = re.search(r"Localisation\s*[:\-]\s*([^\n,;]+)", cv_text, flags=re.I)
+    if m:
+        data["localisation"]["value"] = m.group(1).strip()
+
+    # Diplômes / Certifs (très simple : mots clés usuels)
+    if re.search(r"\b(licence|master|engineer|ing[eé]nieur|bachelor|bac\+)\b", cv_text, flags=re.I):
+        data["diplomes_obtenus"].append({"label": "Diplôme détecté", "year": None, "evidence": []})
+    if re.search(r"\b(certification|certifi[eé])\b", cv_text, flags=re.I):
+        data["certifications"].append({"label": "Certification détectée", "evidence": []})
+
+    return data
+
+
+
+
+
+
+
+
+
+
 # ----------------- Config UI -----------------
 st.set_page_config(page_title="Analyse de CV (Notebook → App)", layout="wide")
 st.title("Analyse de CV — reprise fidèle du notebook")
@@ -165,14 +227,11 @@ def read_cv_text_from_upload(file) -> str:
 
 # ----------------- Cellule 5 : Extraction safe (LLM) -----------------
 def gpt_extract_profile_safe(cv_text: str, model_id: str = MODEL_ID) -> dict:
-    # Si pas de clé → squelette vide, puis regex
+    """Extraction 'safe' via LLM ; fallback offline si clé absente ou erreur HTTP."""
+    # 1) Pas de clé → offline direct
     if not _get_openai_key():
-        return {
-            "experience_ans": {"value": None, "evidence": []},
-            "disponibilite_semaines": {"value": None, "evidence": []},
-            "langues": [], "diplomes_obtenus": [], "diplomes_en_cours": [],
-            "certifications": [], "localisation": {"value": "", "evidence": []}
-        }
+        return offline_extract_from_text(cv_text)
+
     SYSTEM = """
     Tu es un extracteur STRICT. Renvoie UN SEUL JSON avec ce schéma EXACT :
     {
@@ -188,14 +247,22 @@ def gpt_extract_profile_safe(cv_text: str, model_id: str = MODEL_ID) -> dict:
     """
     msgs = [{"role":"system","content":SYSTEM},
             {"role":"user","content":cv_text[:120000]}]
-    raw = _chat_completion(model_id, msgs, temperature=0, max_tokens=900).strip()
-    m = re.search(r"\{.*\}", raw, flags=re.S)
-    js = m.group(0) if m else "{}"
-    try: data = json.loads(js)
-    except Exception:
-        js = re.sub(r",\s*}", "}", js); js = re.sub(r",\s*]", "]", js)
-        data = json.loads(js or "{}")
-    # normalisation légère
+
+    try:
+        raw = _chat_completion(model_id, msgs, temperature=0, max_tokens=900).strip()
+        m = re.search(r"\{.*\}", raw, flags=re.S)
+        js = m.group(0) if m else "{}"
+        try:
+            data = json.loads(js)
+        except Exception:
+            js = re.sub(r",\s*}", "}", js); js = re.sub(r",\s*]", "]", js)
+            data = json.loads(js or "{}")
+    except Exception as e:
+        # <-- C’EST ICI LE CHANGEMENT : on ne plante plus
+        st.warning(f"LLM indisponible ({str(e)[:160]}). Passage en extraction locale.")
+        data = offline_extract_from_text(cv_text)
+
+    # Normalisation légère (au cas où)
     data.setdefault("experience_ans", {"value": None, "evidence": []})
     data.setdefault("disponibilite_semaines", {"value": None, "evidence": []})
     data.setdefault("localisation", {"value": "", "evidence": []})
@@ -204,6 +271,7 @@ def gpt_extract_profile_safe(cv_text: str, model_id: str = MODEL_ID) -> dict:
     data.setdefault("diplomes_en_cours", [])
     data.setdefault("certifications", [])
     return data
+
 
 def enforce_evidence(extraction: dict, cv_text: str) -> dict:
     def _ev_for(val: str):
