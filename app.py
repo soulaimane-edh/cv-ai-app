@@ -22,6 +22,52 @@ from typing import Dict, Any, Tuple, List
 from pypdf import PdfReader
 from docx import Document
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import streamlit as st, requests
+
+# 1) Inputs passés depuis la page WP (query params)
+qp = st.experimental_get_query_params()
+lang = qp.get("lang", ["fr"])[0]
+theme = qp.get("theme", ["light"])[0]
+
+# 2) Ton résultat (exemple)
+result = {"label": "OK", "score": 0.87, "lang": lang, "theme": theme}
+st.write("Résultat:", result)
+
+# 3) Envoi vers WordPress (REST)
+WP_BASE  = st.secrets["WP_BASE"]
+WP_TOKEN = st.secrets["WP_TOKEN"]
+requests.post(
+    f"{WP_BASE}/wp-json/streamlit-bridge/v1/result",
+    json=result,
+    headers={"X-Streamlit-Token": WP_TOKEN},
+    timeout=10
+)
+
+
+
+
+
+
+
+
+
+
+
 # ----------------- UI de base -----------------
 st.set_page_config(page_title="Analyse de CV (Notebook → App)", layout="wide")
 st.title("Analyse de CV — fidèle au notebook, robuste en production")
