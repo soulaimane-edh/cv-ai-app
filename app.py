@@ -1,10 +1,12 @@
 # =========================================================
-# APP STREAMLIT = Notebook (10 cellules) → Application
-# - Appel OpenAI via requests (retries + backoff)
-# - Fallback OFFLINE (regex) si LLM indisponible
-# - Scoring identique au notebook (cellules 6 & 8) :
-#   * phrase-level embeddings, aliases, boost mots-clés, sigmoïde
-#   * poids spec normalisés (somme = 100)
+# APP STREAMLIT — Analyse de CV (Notebook → App)
+# - LLM via API OpenAI (retries/backoff + fallback OFFLINE)
+# - Construction de spec (LLM -> fallback regex)
+# - Scoring "façon notebook" (cellule 6) mais borné par la spec:
+#     * Similarité CV complet ↔ skill
+#     * Seuils must/nice + moyenne, puis pondération par POIDS
+# - Règles strictes (cellule 8) + renormalisation POIDS = 100
+# - Option embeddings locale (all-MiniLM-L6-v2) activable
 # =========================================================
 import io
 import os
@@ -22,29 +24,28 @@ from docx import Document
 
 # ----------------- UI de base -----------------
 st.set_page_config(page_title="Analyse de CV (Notebook → App)", layout="wide")
-st.title("Analyse de CV — version fidèle au notebook")
+st.title("Analyse de CV — fidèle au notebook, robuste en production")
 
 # ----------------- Constantes / limites -----------------
-# Tu peux changer le modèle par défaut ici ; la sidebar permet aussi de le choisir.
-MODEL_ID_DEFAULT = "gpt-5"  # ou "gpt-5-mini" / "gpt-4o-mini" suivant ton compte
-EMB_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+MODEL_ID_DEFAULT = "gpt-5-mini"              # ou "gpt-5" / "gpt-4o-mini" suivant ton compte
+EMB_MODEL        = "sentence-transformers/all-MiniLM-L6-v2"
 
-MAX_MB  = int(st.secrets.get("limits", {}).get("MAX_FILE_MB", 5))
-MAX_PGS = int(st.secrets.get("limits", {}).get("MAX_PAGES", 8))
-LLM_MIN_DELAY = float(st.secrets.get("limits", {}).get("LLM_MIN_DELAY", 1.2))  # pause entre CV pour limiter 429
+MAX_MB        = int(st.secrets.get("limits", {}).get("MAX_FILE_MB", 5))
+MAX_PAGES     = int(st.secrets.get("limits", {}).get("MAX_PAGES", 8))
+LLM_MIN_DELAY = float(st.secrets.get("limits", {}).get("LLM_MIN_DELAY", 1.2))
 
 # ----------------- Sidebar : paramètres LLM -----------------
 with st.sidebar:
-    st.subheader("⚙️ Paramètres LLM")
+    st.subheader("⚙️ Paramètres")
     if "MODEL_ID" not in st.session_state:
         st.session_state["MODEL_ID"] = MODEL_ID_DEFAULT
     st.session_state["MODEL_ID"] = st.text_input(
-        "Model ID",
-        st.session_state["MODEL_ID"],
-        help="Ex: gpt-5, gpt-5-mini, gpt-4o-mini"
+        "Model ID (OpenAI)", st.session_state["MODEL_ID"],
+        help="Ex: gpt-5, gpt-5-mini, gpt-4o-mini (doit être accessible sur ton compte API)"
     )
     st.session_state["FORCE_OFFLINE"] = st.checkbox(
-        "Forcer le mode OFFLINE (pas d'appel LLM)", value=False
+        "Forcer OFFLINE (aucun appel LLM)", value=False,
+        help="Si coché, la construction de spec et l'extraction n'utiliseront pas l'API."
     )
 
 # ----------------- Clé OpenAI + appel HTTP (avec retries) -----------------
@@ -56,25 +57,31 @@ def _get_openai_key() -> str:
 
 def _chat_completion(model: str, messages: list, temperature: float = 0, max_tokens: int = 700,
                      retries: int = 4) -> str:
+    """Appel /v1/chat/completions avec retries + respect éventuel de Retry-After."""
     key = _get_openai_key()
     if not key or not key.startswith("sk-"):
-        raise RuntimeError("OPENAI_API_KEY absente ou invalide (Settings → Secrets).")
+        raise RuntimeError("OPENAI_API_KEY absente/invalide (Settings → Secrets).")
 
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    # Support optionnel org/projet si précisé dans Secrets/env
+    org  = (st.secrets.get("llm", {}) or {}).get("OPENAI_ORG")     or os.getenv("OPENAI_ORG")
+    proj = (st.secrets.get("llm", {}) or {}).get("OPENAI_PROJECT") or os.getenv("OPENAI_PROJECT")
+    if org:  headers["OpenAI-Organization"] = org
+    if proj: headers["OpenAI-Project"]      = proj
+
     payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
 
-    delay = 2.0  # backoff initial
-    last_error_text = ""
+    delay = 2.0
+    last_err = ""
     for attempt in range(retries):
         resp = requests.post(url, headers=headers, json=payload, timeout=90)
         if resp.status_code == 200:
             data = resp.json()
             return data["choices"][0]["message"]["content"]
 
-        # Retriables
         if resp.status_code in (429, 500, 502, 503, 504):
-            last_error_text = resp.text[:300]
+            last_err = resp.text[:300]
             ra = resp.headers.get("retry-after")
             if ra:
                 try:
@@ -85,13 +92,12 @@ def _chat_completion(model: str, messages: list, temperature: float = 0, max_tok
             delay = min(delay * 2, 20.0)
             continue
 
-        # Non-retriable
         raise RuntimeError(f"OpenAI HTTP {resp.status_code}: {resp.text[:300]}")
 
-    raise RuntimeError(f"OpenAI indisponible après retries. Dernier message: {last_error_text}")
+    raise RuntimeError(f"OpenAI indisponible après retries. Dernier message: {last_err}")
 
 # ----------------- Outils lecture fichiers/texte -----------------
-def _extract_text_pdf_bytes(b: bytes, max_pages=MAX_PGS) -> str:
+def _extract_text_pdf_bytes(b: bytes, max_pages=MAX_PAGES) -> str:
     r = PdfReader(io.BytesIO(b))
     pages = r.pages[:max_pages]
     return "\n".join(p.extract_text() or "" for p in pages)
@@ -119,15 +125,15 @@ def clean_text_soft(t: str) -> str:
     t = re.sub(r"\n{3,}", "\n\n", t).strip()
     return t
 
-# ----------------- Spec par défaut + validate -----------------
+# ----------------- Spec par défaut + validate + renormalisation -----------------
 DEFAULT_SPEC = {
     "must_have": [], "nice_to_have": [],
     "experience_min_ans": 0,
     "langues": {}, "diplomes": [], "certifications": [],
     "localisation": "", "disponibilite_max_semaines": 4,
     "poids": {
-        "must_have": 40, "nice_to_have": 15, "experience": 15,
-        "langues": 10, "diplomes_certifs": 10, "localisation_dispo": 10
+        "must_have": 40, "nice_to_have": 20, "experience": 15,
+        "langues": 10, "diplomes_certifs": 10, "localisation_dispo": 5
     }
 }
 
@@ -153,9 +159,23 @@ def validate_fill_spec(s: dict) -> dict:
     except: spec_v["disponibilite_max_semaines"] = 4
     return spec_v
 
+def _renormalize_weights(spec: dict) -> dict:
+    """S'assure que la somme des poids = 100 (évite des scores >100)."""
+    P = spec.get("poids", {}).copy()
+    keys = ["must_have","nice_to_have","experience","langues","diplomes_certifs","localisation_dispo"]
+    s = sum(float(P.get(k, 0)) for k in keys)
+    if s <= 0:
+        P = {"must_have":40,"nice_to_have":20,"experience":15,"langues":10,"diplomes_certifs":10,"localisation_dispo":5}
+        s = 100.0
+    if abs(s - 100.0) > 1e-6:
+        for k in keys:
+            P[k] = round(float(P.get(k, 0)) * 100.0 / s, 3)
+    spec["poids"] = P
+    return spec
+
 # ----------------- Fallback OFFLINE pour construire la spec -----------------
 def offline_spec_from_text(txt: str) -> dict:
-    """Construit une spec minimale depuis la fiche projet (sans LLM)."""
+    """Spec minimale extraite depuis fiche projet (sans LLM)."""
     txt_l = txt.lower()
 
     def grab_section(header_keywords):
@@ -187,7 +207,6 @@ def offline_spec_from_text(txt: str) -> dict:
         m = re.search(r"exp[\w\s:]*?(\d+)\s*(ans|years?)", txt_l)
         if m: exp = int(m.group(1))
 
-    ORDER = ["A1","A2","B1","B2","C1","C2"]
     langues = {}
     for code in ["fr","en","de","es","ar","it"]:
         p = re.search(rf"\b{code}\b[^A-Z0-9]{{0,20}}(A1|A2|B1|B2|C1|C2)", txt, flags=re.I)
@@ -209,19 +228,14 @@ def offline_spec_from_text(txt: str) -> dict:
     m = re.search(r"(\d+)\s*(semaines?)\s*(?:max|maximum|disponibilit[eé])", txt_l)
     if m: dispo = int(m.group(1))
 
-    poids = {"must_have":40,"nice_to_have":15,"experience":15,"langues":10,"diplomes_certifs":10,"localisation_dispo":10}
-
-    return validate_fill_spec({
-        "must_have": must,
-        "nice_to_have": nice,
+    spec = validate_fill_spec({
+        "must_have": must, "nice_to_have": nice,
         "experience_min_ans": exp,
-        "langues": langues,
-        "diplomes": diplomes,
-        "certifications": certifs,
-        "localisation": loc,
-        "disponibilite_max_semaines": dispo,
-        "poids": poids
+        "langues": langues, "diplomes": diplomes, "certifications": certifs,
+        "localisation": loc, "disponibilite_max_semaines": dispo,
+        "poids": {"must_have":40,"nice_to_have":20,"experience":15,"langues":10,"diplomes_certifs":10,"localisation_dispo":5}
     })
+    return _renormalize_weights(spec)
 
 # ----------------- Cellule 3 : Spec via LLM (fallback si erreur) -----------------
 SPEC_SYSTEM = """
@@ -242,34 +256,35 @@ tu renvoies UNIQUEMENT un JSON valide qui respecte exactement ce schéma :
   }
 }
 Règles :
-- Valeurs réalistes (ex: expérience 0..20).
-- Si info absente → mets une valeur par défaut raisonnable.
-- Les poids doivent approx. sommer 100 (±5).
+- Valeurs réalistes.
+- Si info absente → valeurs par défaut raisonnables.
+- Les poids doivent approx. sommer 100.
 - Réponds en UNE SEULE structure JSON, sans texte autour.
 """
 
 def gpt_build_spec_from_text(fiche_texte: str, model_id: str = None) -> dict:
-    """Construit la spec via LLM ; fallback regex si l'appel échoue."""
+    """Spec via LLM ; fallback regex si l'appel échoue ou FORCE_OFFLINE."""
     model_id = model_id or st.session_state.get("MODEL_ID", MODEL_ID_DEFAULT)
-    msgs = [{"role": "system", "content": SPEC_SYSTEM},
-            {"role": "user",   "content": fiche_texte}]
+    msgs = [{"role":"system","content":SPEC_SYSTEM},
+            {"role":"user","content":fiche_texte}]
     try:
         if st.session_state.get("FORCE_OFFLINE"):
             raise RuntimeError("FORCE_OFFLINE activé")
         txt = _chat_completion(model_id, msgs, temperature=0, max_tokens=700).strip()
         m = re.search(r"\{.*\}", txt, flags=re.S)
         if not m:
-            raise ValueError("JSON non trouvé dans la réponse du modèle.")
+            raise ValueError("JSON non trouvé")
         raw = m.group(0)
         try:
-            return validate_fill_spec(json.loads(raw))
+            spec = validate_fill_spec(json.loads(raw))
         except Exception:
             cleaned = re.sub(r",\s*}", "}", raw)
             cleaned = re.sub(r",\s*]", "]", cleaned)
-            return validate_fill_spec(json.loads(cleaned))
+            spec = validate_fill_spec(json.loads(cleaned))
     except Exception as e:
-        st.warning("💡 Construction de la spec sans LLM (fallback) — " + str(e)[:180])
-        return offline_spec_from_text(fiche_texte)
+        st.warning("💡 Spec sans LLM (fallback) — " + str(e)[:180])
+        spec = offline_spec_from_text(fiche_texte)
+    return _renormalize_weights(spec)
 
 # ----------------- Cellule 4 : Lecture CV -----------------
 def read_cv_text_from_upload(file) -> str:
@@ -283,7 +298,6 @@ def read_cv_text_from_upload(file) -> str:
 
 # ----------------- Cellule 5 : Extraction safe (LLM + fallback) -----------------
 def offline_extract_from_text(cv_text: str) -> dict:
-    """Extraction locale minimaliste (regex) quand le LLM est indisponible."""
     data = {
         "experience_ans": {"value": None, "evidence": []},
         "disponibilite_semaines": {"value": None, "evidence": []},
@@ -314,10 +328,8 @@ def offline_extract_from_text(cv_text: str) -> dict:
     return data
 
 def gpt_extract_profile_safe(cv_text: str, model_id: str = None) -> dict:
-    """Extraction 'safe' via LLM ; fallback offline si clé absente ou erreur HTTP."""
-    if st.session_state.get("FORCE_OFFLINE"):
-        return offline_extract_from_text(cv_text)
-    if not _get_openai_key():
+    """Extraction via LLM ; fallback offline si clé absente/erreur/forced."""
+    if st.session_state.get("FORCE_OFFLINE") or not _get_openai_key():
         return offline_extract_from_text(cv_text)
 
     SYSTEM = """
@@ -331,7 +343,7 @@ def gpt_extract_profile_safe(cv_text: str, model_id: str = None) -> dict:
       "certifications": [{"label": string, "evidence":[{"text": string, "start": number, "end": number}]}],
       "localisation": {"value": string|null, "evidence":[{"text": string, "start": number, "end": number}]}
     }
-    - N'INVENTE RIEN. Si l'info n'est pas explicite -> null/"" ou vide.
+    - N'INVENTE RIEN.
     """
     model_id = model_id or st.session_state.get("MODEL_ID", MODEL_ID_DEFAULT)
     msgs = [{"role":"system","content":SYSTEM},
@@ -381,170 +393,148 @@ def fill_with_regex_if_missing(extraction: dict, cv_text: str) -> dict:
         if m: extraction["disponibilite_semaines"] = {"value": float(m.group(1)), "evidence": []}
     return extraction
 
-# ----------------- Cellule 6 : Embeddings + scoring (identique notebook) -----------------
-USE_EMB = st.toggle("Activer embeddings (S-BERT) — nécessite torch", value=False)
+# ----------------- Cellule 6 : Embeddings + scoring "notebook-like" -----------------
+USE_EMB = st.toggle("Activer embeddings (S-BERT) — nécessite torch (plus lent)", value=False)
 
 @st.cache_resource
 def get_emb_model():
     from sentence_transformers import SentenceTransformer
     return SentenceTransformer(EMB_MODEL)
 
-# Aliases utilisés dans le notebook
-SKILL_ALIASES = {
-    "python": ["python"],
-    "sql": ["sql","t-sql","postgresql","mysql","athena","redshift"],
-    "spark": ["spark","pyspark","apache spark"],
-    "airflow": ["airflow","apache airflow","dag","dags"],
-    "aws": ["aws","amazon web services","s3","emr","glue","athena","redshift"],
-    "docker": ["docker","container","conteneurisation"],
-    "kubernetes": ["kubernetes","k8s"],
-    "power bi": ["power bi","powerbi","dax"],
-}
-
-def expand_terms(skill: str) -> List[str]:
-    return SKILL_ALIASES.get(skill.lower().strip(), [skill])
-
-def split_sentences(text: str) -> List[str]:
-    raw = re.split(r"[\n\.!\?;]+", text)
-    sents = [re.sub(r"\s+", " ", s).strip() for s in raw]
-    return [s for s in sents if s]
-
-def keyword_hit(aliases: List[str], text: str) -> bool:
-    t = text.lower()
-    for a in aliases:
-        a = a.lower().strip()
-        if re.search(rf"(?<![a-z0-9_]){re.escape(a)}(?![a-z0-9_])", t):
-            return True
-    return False
-
-BOOST_ADD = 0.15     # +0.15 si mot-clé trouvé
-BOOST_CAP = 0.85     # plafond 0.85
-
-def best_sim(term: str, sentences: List[str], sent_embs, emb_model) -> Tuple[float, str]:
-    """Meilleure similarité phrase pour 'term' + phrase associée.
-       - embeddings si dispo ; fallback RapidFuzz sinon
-    """
-    if emb_model is not None and sent_embs is not None:
-        from sentence_transformers import util
-        v = emb_model.encode(term, normalize_embeddings=True)
-        sims = util.cos_sim(sent_embs, v).squeeze(1).tolist()
-        if not sims:
-            return 0.0, ""
-        idx = max(range(len(sims)), key=lambda i: sims[i])
-        return float(sims[idx]), sentences[idx]
-    else:
-        from rapidfuzz import fuzz
-        best = (0.0, "")
-        for s in sentences:
-            sc = fuzz.partial_ratio(term.lower(), s.lower()) / 100.0
-            if sc > best[0]: best = (sc, s)
-        return best
-
-def best_sim_skill(skill: str, sentences: List[str], full_text: str, sent_embs, emb_model) -> Tuple[float, str]:
-    aliases = expand_terms(skill)
-    best = (0.0, "")
-    for term in aliases:
-        sim, phr = best_sim(term, sentences, sent_embs, emb_model)
-        if sim > best[0]: best = (sim, phr)
-    if keyword_hit(aliases, full_text):
-        best = (min(BOOST_CAP, best[0] + BOOST_ADD), best[1])
-    return best
-
-def map_points(sim: float, max_pts: float, t0=0.35, t1=0.85) -> float:
-    if sim <= t0: return 0.0
-    if sim >= t1: return max_pts
-    x = (sim - t0) / (t1 - t0)
-    return max_pts * (1 / (1 + math.exp(-10 * (x - 0.5))))
-
 def score_competences_embeddings(cv_text: str, spec: Dict[str, Any],
-                                 seuil_must=0.60, seuil_nice=0.50
+                                 thr_must: float = 0.28, thr_nice: float = 0.25
                                  ) -> Tuple[float, Dict[str, List[Tuple[str, float, str]]]]:
-    P = spec["poids"]
-    sents = split_sentences(cv_text)
-    emb_model = get_emb_model() if USE_EMB else None
-    sent_embs = None
-    if emb_model is not None:
-        sent_embs = emb_model.encode(sents, normalize_embeddings=True)
+    """
+    Logique alignée à la cellule 6 du notebook :
+    - Similarité entre le CV (texte entier) et chaque skill.
+    - On calcule la moyenne des similarités par groupe (must/nice),
+      on applique des seuils de couverture, puis on pondère par POIDS de la spec.
+    - Fallback sans embeddings = simple keyword strict (pas de fuzzy permissif).
+    """
+    from statistics import mean
 
-    total = 0.0
+    P = spec.get("poids", {})
+    w_must = float(P.get("must_have", 40.0))
+    w_nice = float(P.get("nice_to_have", 20.0))
+
+    must = [s.strip() for s in spec.get("must_have", []) if s.strip()]
+    nice = [s.strip() for s in spec.get("nice_to_have", []) if s.strip()]
     proofs = {"must": [], "nice": []}
 
-    # MUST
-    must = [s for s in spec.get("must_have", []) if s.strip()]
+    sims_must, sims_nice = [], []
+
+    if USE_EMB:
+        try:
+            from sentence_transformers import util
+            model = get_emb_model()
+            cv_vec = model.encode(cv_text, normalize_embeddings=True)
+
+            def sim(skill: str) -> float:
+                v = model.encode(skill, normalize_embeddings=True)
+                return float(util.cos_sim(cv_vec, v).item())
+
+            for sk in must:
+                s = sim(sk); proofs["must"].append((sk, round(s,3), sk if s >= thr_must else ""))
+                sims_must.append(max(0.0, s))
+            for sk in nice:
+                s = sim(sk); proofs["nice"].append((sk, round(s,3), sk if s >= thr_nice else ""))
+                sims_nice.append(max(0.0, s))
+        except Exception:
+            # en cas d'erreur d'embeddings, on retombe sur le strict keyword
+            LOW = cv_text.lower()
+            def hit(skill: str) -> float:
+                return 1.0 if re.search(rf"(?<![a-z0-9_]){re.escape(skill.lower())}(?![a-z0-9_])", LOW) else 0.0
+            for sk in must:
+                s = hit(sk); proofs["must"].append((sk, s, sk if s >= 1.0 else "")); sims_must.append(s)
+            for sk in nice:
+                s = hit(sk); proofs["nice"].append((sk, s, sk if s >= 1.0 else "")); sims_nice.append(s)
+    else:
+        # Fallback (OFFLINE) : keyword strict
+        LOW = cv_text.lower()
+        def hit(skill: str) -> float:
+            return 1.0 if re.search(rf"(?<![a-z0-9_]){re.escape(skill.lower())}(?![a-z0-9_])", LOW) else 0.0
+        for sk in must:
+            s = hit(sk); proofs["must"].append((sk, s, sk if s >= 1.0 else "")); sims_must.append(s)
+        for sk in nice:
+            s = hit(sk); proofs["nice"].append((sk, s, sk if s >= 1.0 else "")); sims_nice.append(s)
+
+    pts = 0.0
     if must:
-        part = P["must_have"] / len(must)
-        for skill in must:
-            sim, phr = best_sim_skill(skill, sents, cv_text, sent_embs, emb_model)
-            if sim >= seuil_must:
-                total += map_points(sim, part)
-            proofs["must"].append((skill, round(sim, 3), phr))
+        avg_must   = mean(sims_must)
+        cover_must = mean([1.0 if s >= thr_must else 0.0 for s in sims_must])
+        pts += w_must * min(1.0, max(0.0, avg_must)) * cover_must
 
-    # NICE
-    nice = [s for s in spec.get("nice_to_have", []) if s.strip()]
     if nice:
-        part = P["nice_to_have"] / len(nice)
-        for skill in nice:
-            sim, phr = best_sim_skill(skill, sents, cv_text, sent_embs, emb_model)
-            if sim >= seuil_nice:
-                total += map_points(sim, part)
-            proofs["nice"].append((skill, round(sim, 3), phr))
+        avg_nice   = mean(sims_nice)
+        cover_nice = mean([1.0 if s >= thr_nice else 0.0 for s in sims_nice])
+        pts += w_nice * min(1.0, max(0.0, avg_nice)) * cover_nice
 
-    return round(total, 2), proofs
+    return round(pts, 2), proofs
 
-# ----------------- Cellule 8 : Règles (identiques) -----------------
+# ----------------- Cellule 8 : Règles strictes -----------------
 ORDER_CEFR = {"A1":1,"A2":2,"B1":3,"B2":4,"C1":5,"C2":6}
-
 def _num(slot, default=None):
     if isinstance(slot, dict): slot = slot.get("value", None)
     try: return float(slot)
     except (TypeError, ValueError): return default
-
 def _str(slot):
     if isinstance(slot, dict): return slot.get("value", "")
     return slot or ""
 
 def score_autres_criteres(ex: Dict[str, Any], spec: Dict[str, Any]) -> Tuple[float, str, Dict[str, Any]]:
-    if not ex or "error" in ex:
-        return 0.0, f"Extraction invalide ({ex.get('error','?')})", {"ok": False}
+    """
+    Règles strictes :
+    - Expérience : points uniquement si un minimum est exigé (>0)
+    - Langues : points uniquement si des langues sont exigées ET niveau >= requis
+    - Diplômes/Certifs : points uniquement s'il y en a au moins un
+    - Localisation/Dispo : points uniquement si la spec impose la contrainte
+    """
+    P = spec.get("poids", {})
+    w_exp  = float(P.get("experience", 15))
+    w_lang = float(P.get("langues", 10))
+    w_dc   = float(P.get("diplomes_certifs", 10))
+    w_locd = float(P.get("localisation_dispo", 5))
 
-    P = spec["poids"]
     pts = 0.0
 
     # Expérience
-    need = int(spec.get("experience_min_ans", 0) or 0)
-    yrs  = _num(ex.get("experience_ans"), 0) or 0
-    pts += P["experience"] * (min(1.0, yrs / max(1, need)) if need else 1.0)
+    need = spec.get("experience_min_ans", None)
+    yrs  = _num(ex.get("experience_ans"))
+    if isinstance(need, (int, float)) and need > 0 and isinstance(yrs, (int, float)):
+        pts += w_exp * min(1.0, yrs / max(1, int(need)))
 
-    # Langues (niveau ≥ requis)
+    # Langues
     lang_req = spec.get("langues", {}) or {}
     if lang_req:
-        per_lang = P["langues"] / len(lang_req)
+        per_lang = w_lang / len(lang_req)
         for code, req in lang_req.items():
-            have = next((d.get("niveau") for d in ex.get("langues", []) if (d.get("code") or "").lower()==code.lower()), None)
-            if have and ORDER_CEFR.get((have or "").upper(),0) >= ORDER_CEFR.get((req or "").upper(),0):
+            have = next((d.get("niveau") for d in ex.get("langues", [])
+                         if (d.get("code") or "").lower() == code.lower()), None)
+            if have and ORDER_CEFR.get((have or "").upper(), 0) >= ORDER_CEFR.get((req or "").upper(), 0):
                 pts += per_lang
 
-    # Diplômes/Certifs : au moins un
-    dipl_ok = bool(ex.get("diplomes_obtenus") or ex.get("diplomes") or ex.get("certifications"))
-    if dipl_ok: pts += P["diplomes_certifs"]
+    # Diplômes/Certifs (au moins un)
+    if ex.get("diplomes_obtenus") or ex.get("certifications"):
+        pts += w_dc
 
-    # Localisation (1/2 du poids)
-    ex_loc = _str(ex.get("localisation")).lower()
-    wanted = (spec.get("localisation") or "").lower()
-    loc_ok = True
-    if "remote" not in wanted and wanted.strip():
-        loc_ok = any(city.strip().lower() in ex_loc for city in wanted.split("|") if city.strip())
-    if loc_ok: pts += P["localisation_dispo"] / 2
+    # Localisation
+    want_loc = (spec.get("localisation") or "").strip()
+    if want_loc:
+        ex_loc = _str(ex.get("localisation")).lower()
+        ok = any(seg.strip().lower() in ex_loc for seg in want_loc.split("|") if seg.strip())
+        if ok:
+            pts += w_locd / 2
 
-    # Disponibilité (1/2 du poids)
-    dmax = spec.get("disponibilite_max_semaines", 4)
-    dval = _num(ex.get("disponibilite_semaines"), 10**6)
-    if isinstance(dval, (int, float)) and dval <= dmax:
-        pts += P["localisation_dispo"] / 2
+    # Disponibilité
+    dmax = spec.get("disponibilite_max_semaines", None)
+    dval = _num(ex.get("disponibilite_semaines"))
+    if isinstance(dmax, (int, float)) and isinstance(dval, (int, float)) and dval <= dmax:
+        pts += w_locd / 2
 
-    com = "Règles: exp/langues/diplômes+certifs/loc/dispo pondérées par la spec."
+    com = "Règles: exp(min>0), langues requises, diplômes/certifs≥1, localisation/dispo si imposées."
     return round(pts, 2), com, {"ok": True}
 
+# ----------------- Commentaire déterministe (texte fixe) -----------------
 def build_commentaire_deterministe(score_final, evidences, extraction, spec):
     def _fmt_langues(lang_list):
         if not lang_list: return "non mentionnées"
@@ -573,19 +563,16 @@ def build_commentaire_deterministe(score_final, evidences, extraction, spec):
                 "Moyen – à examiner" if score>=55 else
                 "Faible – non prioritaire")
 
-    def _best(evid, kind="must", k=4, thr=0.55):
-        rows=[(sk,float(sim),phr) for (sk,sim,phr) in evid.get(kind,[])]
-        rows.sort(key=lambda r:r[1], reverse=True)
-        rows=[r for r in rows if r[1] >= thr]
-        return rows[:k]
-
-    bullets = []
-    for (sk,sim,phr) in _best(evidences,"must",4,0.55)+_best(evidences,"nice",4,0.50):
-        bullets.append(f"• {sk} (sim={sim:.3f}) — « {phr[:120]}… »" if phr else f"• {sk} (sim={sim:.3f})")
+    rows = []
+    for kind, thr in (("must",0.55),("nice",0.50)):
+        top = sorted(evidences.get(kind,[]), key=lambda x: x[1], reverse=True)
+        for sk,sim,phr in top[:4]:
+            if sim >= thr:
+                rows.append(f"• {sk} (sim={sim:.3f})" + (f" — « {phr[:120]}… »" if phr else ""))
 
     com = []
     com.append(f"Score final : {score_final:.2f} %.")
-    com.append("Compétences :"); com.extend(bullets if bullets else ["• Aucune preuve forte."])
+    com.append("Compétences :"); com.extend(rows if rows else ["• Aucune preuve forte."])
     com.append(f"Expérience : {exp_txt} (objectif : {target_txt}).")
     com.append(f"Langues : {_fmt_langues(extraction.get('langues', []))}.")
     com.append(f"Diplômes : {dipl_txt}. Certifs : {certs_txt}.")
@@ -593,7 +580,7 @@ def build_commentaire_deterministe(score_final, evidences, extraction, spec):
     com.append(f"Recommandation : {decision_band(score_final)}.")
     return "\n".join(com)
 
-# ----------------- Cache extraction (éviter appels répétés) -----------------
+# ----------------- Cache extraction (évite appels LLM récurrents) -----------------
 def _hash_text(t: str) -> str:
     return hashlib.sha256(t.encode("utf-8")).hexdigest()
 
@@ -625,6 +612,7 @@ with tab1:
             text = read_text_generic_from_upload(sp_file)
             spec = gpt_build_spec_from_text(text, model_id=st.session_state["MODEL_ID"])
 
+        spec = _renormalize_weights(spec)
         st.session_state["spec"] = spec
         st.success("✅ Spec chargée.")
         st.json(spec)
@@ -635,7 +623,7 @@ with tab1:
 with tab2:
     spec = st.session_state.get("spec")
     if not spec:
-        st.info("➡️ Onglet 1 : génère/charge la spec.")
+        st.info("➡️ Onglet 1 : génère/charge la spec avant d'analyser des CV.")
     else:
         files = st.file_uploader("CV (PDF/DOCX/TXT) — multiples", type=["pdf","docx","txt"], accept_multiple_files=True)
         want_llm_comment = st.checkbox("Générer un commentaire RH (LLM)")
@@ -644,10 +632,11 @@ with tab2:
             for idx, f in enumerate(files, start=1):
                 if f.size > MAX_MB * 1024 * 1024:
                     st.error(f"{f.name} : > {MAX_MB} Mo"); continue
-                t0=time.time()
+
+                t0 = time.time()
                 cv_text = read_cv_text_from_upload(f)
 
-                # Extraction (cache + retries + fallback)
+                # Extraction (cache + fallback)
                 cv_hash = _hash_text(cv_text)
                 extraction = _extract_cached(cv_hash, cv_text, st.session_state["MODEL_ID"])
                 extraction = enforce_evidence(extraction, cv_text)
@@ -664,20 +653,22 @@ with tab2:
                     try:
                         comment_rh = _chat_completion(
                             st.session_state["MODEL_ID"],
-                            [{"role":"user","content":f"""Rôle: assistant RH. Commentaire factuel et concis (5–7 lignes).
+                            [{"role":"user","content":f"""Rôle: assistant RH. Commentaire factuel (5–7 lignes).
 - Score final: {score_final} %
 - Preuves must (top): {sorted(evidences.get('must',[]), key=lambda x: x[1], reverse=True)[:3]}
 - Preuves nice (top): {sorted(evidences.get('nice',[]), key=lambda x: x[1], reverse=True)[:3]}
 - Détails règles: {details_autres}
-Contraintes: style pro FR, phrases courtes, finir par une recommandation."""}],
+Contraintes: style FR pro, phrases courtes, terminer par une recommandation."""}],
                             temperature=0.2, max_tokens=220
                         ).strip()
                     except Exception as e:
                         st.warning(f"LLM indisponible pour le commentaire ({str(e)[:120]}).")
 
                 rows.append({
-                    "fichier": f.name, "score_final": score_final,
-                    "points_embeddings": pts_mn, "points_regles": pts_autres,
+                    "fichier": f.name,
+                    "score_final": score_final,
+                    "points_embeddings": pts_mn,
+                    "points_regles": pts_autres,
                     "exp_years": _num(extraction.get("experience_ans")),
                     "commentaire": comment_rh
                 })
@@ -688,9 +679,8 @@ Contraintes: style pro FR, phrases courtes, finir par une recommandation."""}],
                     st.markdown("**Commentaire déterministe**")
                     st.text(build_commentaire_deterministe(score_final, evidences, extraction, spec))
                     if comment_rh: st.markdown("**Commentaire RH (LLM)**"); st.write(comment_rh)
-                    st.caption(f"latence: {time.time()-t0:.2f}s — mode: {'embeddings' if USE_EMB else 'fallback (RapidFuzz)'}")
+                    st.caption(f"latence: {time.time()-t0:.2f}s — mode: {'embeddings' if USE_EMB else 'keyword-only'}")
 
-                # petite pause anti 429 si plusieurs CV
                 if idx < len(files):
                     time.sleep(LLM_MIN_DELAY)
 
@@ -703,13 +693,13 @@ Contraintes: style pro FR, phrases courtes, finir par une recommandation."""}],
 
 with tab3:
     st.write("**Cellule 10 : Test rapide**")
-    spec_demo = validate_fill_spec({
+    spec_demo = _renormalize_weights(validate_fill_spec({
         "must_have": ["python","sql","power bi"],
         "nice_to_have": ["airflow","docker"],
         "experience_min_ans": 1,
         "langues": {"fr":"B2","en":"B1"},
         "poids": {"must_have":50,"nice_to_have":30,"experience":10,"langues":5,"diplomes_certifs":3,"localisation_dispo":2}
-    })
+    }))
     cv_demo = """Mohamed Soulaimane — Data Analyst
 Compétences: Python, SQL, Airflow, Docker, Power BI
 Expérience: 2 ans en analytics et BI
