@@ -3,7 +3,6 @@ pypdf==4.3.1
 python-docx==1.1.2
 pandas==2.2.2
 requests==2.32.3
-rapidfuzz==3.9.6
 # Embeddings (optionnels via le toggle)
 sentence-transformers==3.0.1
 transformers==4.42.3
