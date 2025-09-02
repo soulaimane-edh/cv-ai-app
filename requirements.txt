@@ -17,3 +17,15 @@ fastapi
 uvicorn
 pypdf
 python-docx
+
+
+
+fastapi
+uvicorn[standard]
+pydantic
+pypdf
+python-docx
+requests
+python-multipart
+sentence-transformers==2.2.2
+torch==2.2.2 ; platform_system != "Darwin"
