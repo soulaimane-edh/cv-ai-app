@@ -13,10 +13,10 @@ numpy==1.26.4
 fastapi
 
 
-fastapi
+
 uvicorn
-pypdf
-python-docx
+
+
 
 
 
@@ -28,4 +28,4 @@ pydantic
 
 python-multipart
 sentence-transformers==2.2.2
-torch==2.2.2 ; platform_system != "Darwin"
+
