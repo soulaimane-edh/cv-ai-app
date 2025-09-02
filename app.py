@@ -755,3 +755,54 @@ Diplômes: Licence Informatique (2021)
 
 
 
+
+
+
+
+
+# === BRIDGE WORDPRESS — À COLLER À LA FIN DE app.py ===
+import os, requests, streamlit as st
+
+# 0) Si tu n'as PAS déjà une variable `result`, on en fabrique une minimale pour tester
+if "result" not in locals():
+    prediction = locals().get("prediction") or locals().get("label") or "OK"
+    try:
+        score = float(locals().get("score") or 0.87)
+    except Exception:
+        score = 0.87
+
+    # Récupère quelques params de la page WP (optionnel)
+    qp = getattr(st, "query_params", None)
+    qp = dict(qp) if qp is not None else st.experimental_get_query_params()
+    def _get(q, k, d):
+        v = q.get(k, d)
+        return (v[0] if isinstance(v, list) and v else v) or d
+    lang = _get(qp, "lang", "fr")
+    theme = _get(qp, "theme", "light")
+
+    result = {"label": str(prediction), "score": score, "lang": lang, "theme": theme}
+    st.json(result)  # affichage pour vérifier
+
+# 1) Secrets / variables d'environnement (ne fait PAS crasher si absents)
+WP_BASE  = os.getenv("WP_BASE")  or st.secrets.get("WP_BASE", "")
+WP_TOKEN = os.getenv("WP_TOKEN") or st.secrets.get("WP_TOKEN", "")
+
+# 2) Envoi vers WordPress uniquement si tout est configuré
+if WP_BASE and WP_TOKEN:
+    try:
+        resp = requests.post(
+            f"{WP_BASE}/wp-json/streamlit-bridge/v1/result",
+            json=result,
+            headers={"X-Streamlit-Token": WP_TOKEN},
+            timeout=10
+        )
+        resp.raise_for_status()
+        st.caption("Résultat envoyé à WordPress ✅")
+    except Exception as e:
+        st.caption(f"Envoi WordPress impossible : {e}")
+else:
+    st.caption("WP_BASE / WP_TOKEN non configurés — aucun envoi (l'app continue).")
+
+
+
+
