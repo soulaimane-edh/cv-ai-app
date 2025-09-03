@@ -581,7 +581,7 @@ tab1, tab2, tab3 = st.tabs(["1) Fiche projet → spec", "2) Analyse CV", "3) Dé
 
 with tab1:
     _key_dbg = _get_openai_key(); _mask = (_key_dbg[:3]+"…"+_key_dbg[-4:]) if _key_dbg else "—"
-    st.caption("🔐 Clé OpenAI : " + ("oui ("+_mask+")" if _key_dbg else "non"))
+    st.caption("🔐 Clé : " + ("oui ("+_mask+")" if _key_dbg else "non"))
 
     mode = st.radio("Mode d'entrée fiche projet", ["UPLOAD_DOC", "UPLOAD_JSON", "MANUAL"], horizontal=True)
     sp_file = None
