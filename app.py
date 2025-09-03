@@ -59,12 +59,9 @@ LLM_MIN_DELAY = float(st.secrets.get("limits", {}).get("LLM_MIN_DELAY", 1.2))
 
 # ----------------- Sidebar : paramètres LLM -----------------
 with st.sidebar:
-     st.subheader("⚙️ Paramètres")
-
-    
+    st.subheader("⚙️ Paramètres")
     if "MODEL_ID" not in st.session_state:
         st.session_state["MODEL_ID"] = MODEL_ID_DEFAULT
-   
     st.session_state["MODEL_ID"] = st.text_input(
         "Model ID (OpenAI)", st.session_state["MODEL_ID"],
         help="Ex: gpt-5, gpt-5-mini, gpt-4o-mini (doit être accessible sur ton compte API)"
@@ -73,8 +70,8 @@ with st.sidebar:
         "Forcer OFFLINE (aucun appel LLM)", value=False,
         help="Si coché, la construction de spec et l'extraction n'utiliseront pas l'API."
     )
-   
-#----------- Clé OpenAI + appel HTTP (avec retries) -----------------
+
+# ----------------- Clé OpenAI + appel HTTP (avec retries) -----------------
 def _get_openai_key() -> str:
     key = (st.secrets.get("llm", {}) or {}).get("OPENAI_API_KEY")
     key = key or st.secrets.get("OPENAI_API_KEY")
