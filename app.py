@@ -577,7 +577,7 @@ def _extract_cached(h: str, text: str, model_id: str):
     return gpt_extract_profile_safe(text, model_id=model_id)
 
 # ----------------- UI onglets -----------------
-tab1, tab2, tab3 = st.tabs(["1) Fiche projet → spec", "2) Analyse CV"])
+tab1, tab2, tab3 = st.tabs(["1) Fiche projet → spec", "2) Analyse CV", "3) Démo (cellule 10)"])
 
 with tab1:
     _key_dbg = _get_openai_key(); _mask = (_key_dbg[:3]+"…"+_key_dbg[-4:]) if _key_dbg else "—"
