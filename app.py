@@ -59,7 +59,9 @@ LLM_MIN_DELAY = float(st.secrets.get("limits", {}).get("LLM_MIN_DELAY", 1.2))
 
 # ----------------- Sidebar : paramètres LLM -----------------
 with st.sidebar:
-    st.subheader("⚙️ Paramètres")
+
+
+    
     if "MODEL_ID" not in st.session_state:
         st.session_state["MODEL_ID"] = MODEL_ID_DEFAULT
     st.session_state["MODEL_ID"] = st.text_input(
