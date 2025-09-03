@@ -618,7 +618,7 @@ tab1, tab2, tab3 = st.tabs(["1) Fiche projet → spec", "2) Analyse CV", "3) Dé
 
 with tab1:
     _key_dbg = _get_openai_key(); _mask = (_key_dbg[:3]+"…"+_key_dbg[-4:]) if _key_dbg else "—"
-    st.caption("🔐 Clé OpenAI  : " + ("oui ("+_mask+")" if _key_dbg else "non"))
+    st.caption("🔐 Clé OpenAI : " + ("oui ("+_mask+")" if _key_dbg else "non"))
 
     mode = st.radio("Mode d'entrée fiche projet", ["UPLOAD_DOC", "UPLOAD_JSON", "MANUAL"], horizontal=True)
     sp_file = None
@@ -716,13 +716,6 @@ Contraintes: style FR pro, phrases courtes, terminer par une recommandation."""}
                 st.download_button("Télécharger CSV", df.to_csv(index=False).encode("utf-8"),
                                    "resultats_cv.csv", "text/csv")
 
-
-
-
-
-
-
-
 with tab3:
     st.write("**Cellule 10 : Test rapide**")
     spec_demo = _renormalize_weights(validate_fill_spec({
@@ -749,6 +742,9 @@ Diplômes: Licence Informatique (2021)
         pts_autres, _, _ = score_autres_criteres(ext, spec_demo)
         score = round(min(100.0, pts_mn + pts_autres), 2)
         st.metric("SCORE_FINAL (demo)", f"{score} %")
+
+
+
 
 
 
@@ -808,7 +804,3 @@ if WP_BASE and WP_TOKEN:
         st.caption(f"Envoi WordPress impossible : {e}")
 else:
     st.caption("WP_BASE / WP_TOKEN non configurés — aucun envoi (l'app continue).")
-
-
-
-
