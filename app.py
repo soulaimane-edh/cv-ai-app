@@ -58,20 +58,18 @@ MAX_PAGES     = int(st.secrets.get("limits", {}).get("MAX_PAGES", 8))
 LLM_MIN_DELAY = float(st.secrets.get("limits", {}).get("LLM_MIN_DELAY", 1.2))
 
 # ----------------- Sidebar : paramètres LLM -----------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+with st.sidebar:
+    st.subheader("⚙️ Paramètres")
+    if "MODEL_ID" not in st.session_state:
+        st.session_state["MODEL_ID"] = MODEL_ID_DEFAULT
+    st.session_state["MODEL_ID"] = st.text_input(
+        "Model ID (OpenAI)", st.session_state["MODEL_ID"],
+        help="Ex: gpt-5, gpt-5-mini, gpt-4o-mini (doit être accessible sur ton compte API)"
+    )
+    st.session_state["FORCE_OFFLINE"] = st.checkbox(
+        "Forcer OFFLINE (aucun appel LLM)", value=False,
+        help="Si coché, la construction de spec et l'extraction n'utiliseront pas l'API."
+    )
 
 # ----------------- Clé OpenAI + appel HTTP (avec retries) -----------------
 def _get_openai_key() -> str:
