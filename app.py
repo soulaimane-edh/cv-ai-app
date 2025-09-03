@@ -380,7 +380,7 @@ def fill_with_regex_if_missing(extraction: dict, cv_text: str) -> dict:
     return extraction
 
 # ----------------- Cellule 6 : Embeddings + scoring -----------------
-USE_EMB = st.toggle("Activer embeddings (S-BERT) — nécessite torch (plus lent)", value=False)
+USE_EMB = st.toggle("Activer embeddings (S-BERT) — nécessite torch (plus lent)", value=True)
 
 @st.cache_resource
 def get_emb_model():
