@@ -58,8 +58,8 @@ MAX_PAGES     = int(st.secrets.get("limits", {}).get("MAX_PAGES", 8))
 LLM_MIN_DELAY = float(st.secrets.get("limits", {}).get("LLM_MIN_DELAY", 1.2))
 
 # ----------------- Sidebar : paramètres LLM -----------------
-with st.sidebar:
-
+with :
+     st.subheader("⚙️ Paramètres")
 
     
     if "MODEL_ID" not in st.session_state:
