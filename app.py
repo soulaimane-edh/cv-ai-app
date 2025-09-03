@@ -716,32 +716,6 @@ Contraintes: style FR pro, phrases courtes, terminer par une recommandation."""}
                 st.download_button("Télécharger CSV", df.to_csv(index=False).encode("utf-8"),
                                    "resultats_cv.csv", "text/csv")
 
-with tab3:
-    st.write("**Cellule 10 : Test rapide**")
-    spec_demo = _renormalize_weights(validate_fill_spec({
-        "must_have": ["python","sql","power bi"],
-        "nice_to_have": ["airflow","docker"],
-        "experience_min_ans": 1,
-        "langues": {"fr":"B2","en":"B1"},
-        "poids": {"must_have":50,"nice_to_have":30,"experience":10,"langues":5,"diplomes_certifs":3,"localisation_dispo":2}
-    }))
-    cv_demo = """Mohamed Soulaimane — Data Analyst
-Compétences: Python, SQL, Airflow, Docker, Power BI
-Expérience: 2 ans en analytics et BI
-Langues: FR (C1), EN (B2)
-Localisation: Rabat-Salé
-Disponibilité: 2 semaines
-Certifications: Google Data Analytics
-Diplômes: Licence Informatique (2021)
-"""
-    if st.button("Lancer le test"):
-        ext = gpt_extract_profile_safe(cv_demo, model_id=st.session_state["MODEL_ID"])
-        ext = enforce_evidence(ext, cv_demo)
-        ext = fill_with_regex_if_missing(ext, cv_demo)
-        pts_mn, evid = score_competences_embeddings(cv_demo, spec_demo)
-        pts_autres, _, _ = score_autres_criteres(ext, spec_demo)
-        score = round(min(100.0, pts_mn + pts_autres), 2)
-        st.metric("SCORE_FINAL (demo)", f"{score} %")
 
 
 
