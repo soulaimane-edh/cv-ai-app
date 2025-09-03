@@ -50,7 +50,7 @@ st.set_page_config(page_title="Analyse de CV (Notebook → App)", layout="wide")
 st.title("Analyse de CV — par ED-dahmani Soulaimane")
 
 # ----------------- Constantes / limites -----------------
-MODEL_ID_DEFAULT = "gpt-5-mini"              # ou "gpt-5" / "gpt-4o-mini" suivant ton compte
+MODEL_ID_DEFAULT = "gpt-4o-mini"              # ou "gpt-5" / "gpt-4o-mini" suivant ton compte
 EMB_MODEL        = "sentence-transformers/all-MiniLM-L6-v2"
 
 MAX_MB        = int(st.secrets.get("limits", {}).get("MAX_FILE_MB", 5))
