@@ -47,7 +47,7 @@ from docx import Document
 
 # ----------------- UI de base -----------------
 st.set_page_config(page_title="Analyse de CV (Notebook → App)", layout="wide")
-st.title("Analyse de CV — fidèle au notebook, robuste en production")
+st.title("Analyse de CV — par ED-dahmani Soulaimane")
 
 # ----------------- Constantes / limites -----------------
 MODEL_ID_DEFAULT = "gpt-5-mini"              # ou "gpt-5" / "gpt-4o-mini" suivant ton compte
