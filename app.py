@@ -2,11 +2,11 @@
 # APP STREAMLIT — Analyse de CV (Notebook → App)
 # - LLM via API OpenAI (retries/backoff + fallback OFFLINE)
 # - Construction de spec (LLM -> fallback regex)
-# - Scoring "façon notebook" (cellule 6) mais borné par la spec:
-#     * Similarité CV complet ↔ skill
-#     * Seuils must/nice + moyenne, puis pondération par POIDS
-# - Règles strictes (cellule 8) + renormalisation POIDS = 100
+# - Scoring façon notebook (similarité + règles) borné par la spec
+# - Règles strictes + renormalisation des poids = 100
 # - Option embeddings locale (all-MiniLM-L6-v2) activable
+# - ❌ Pas de sidebar modèle ; modèle fixé à gpt-4o-mini
+# - ❌ Onglet Démo (cellule 10) supprimé
 # =========================================================
 import io
 import os
@@ -26,12 +26,11 @@ from docx import Document
 st.set_page_config(page_title="Analyse de CV (Notebook → App)", layout="wide")
 st.title("Analyse de CV — par ED-dahmani Soulaimane")
 
-# ----------------- Modèle & options figés -----------------
-MODEL_ID_DEFAULT = "gpt-4o-mini"   # modèle figé
-EMB_MODEL        = "sentence-transformers/all-MiniLM-L6-v2"
-FORCE_OFFLINE    = False           # pas de bascule par l'utilisateur
-
 # ----------------- Constantes / limites -----------------
+MODEL_ID_DEFAULT = "gpt-4o-mini"              # modèle OpenAI fixé
+EMB_MODEL        = "sentence-transformers/all-MiniLM-L6-v2"
+FORCE_OFFLINE    = False                      # met à True si tu veux forcer SANS LLM
+
 MAX_MB        = int(st.secrets.get("limits", {}).get("MAX_FILE_MB", 5))
 MAX_PAGES     = int(st.secrets.get("limits", {}).get("MAX_PAGES", 8))
 LLM_MIN_DELAY = float(st.secrets.get("limits", {}).get("LLM_MIN_DELAY", 1.2))
@@ -45,14 +44,13 @@ def _get_openai_key() -> str:
 
 def _chat_completion(model: str, messages: list, temperature: float = 0, max_tokens: int = 700,
                      retries: int = 4) -> str:
-    """Appel /v1/chat/completions avec retries + respect éventuel de Retry-After."""
+    """Appel /v1/chat/completions avec retries + respect de Retry-After."""
     key = _get_openai_key()
     if not key or not key.startswith("sk-"):
         raise RuntimeError("OPENAI_API_KEY absente/invalide (Settings → Secrets).")
 
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-    # Support optionnel org/projet si précisé dans Secrets/env
     org  = (st.secrets.get("llm", {}) or {}).get("OPENAI_ORG")     or os.getenv("OPENAI_ORG")
     proj = (st.secrets.get("llm", {}) or {}).get("OPENAI_PROJECT") or os.getenv("OPENAI_PROJECT")
     if org:  headers["OpenAI-Organization"] = org
@@ -381,7 +379,7 @@ def fill_with_regex_if_missing(extraction: dict, cv_text: str) -> dict:
         if m: extraction["disponibilite_semaines"] = {"value": float(m.group(1)), "evidence": []}
     return extraction
 
-# ----------------- Cellule 6 : Embeddings + scoring "notebook-like" -----------------
+# ----------------- Cellule 6 : Embeddings + scoring -----------------
 USE_EMB = st.toggle("Activer embeddings (S-BERT) — nécessite torch (plus lent)", value=False)
 
 @st.cache_resource
@@ -392,15 +390,7 @@ def get_emb_model():
 def score_competences_embeddings(cv_text: str, spec: Dict[str, Any],
                                  thr_must: float = 0.28, thr_nice: float = 0.25
                                  ) -> Tuple[float, Dict[str, List[Tuple[str, float, str]]]]:
-    """
-    Logique alignée à la cellule 6 du notebook :
-    - Similarité entre le CV (texte entier) et chaque skill.
-    - On calcule la moyenne des similarités par groupe (must/nice),
-      on applique des seuils de couverture, puis on pondère par POIDS de la spec.
-    - Fallback sans embeddings = simple keyword strict (pas de fuzzy permissif).
-    """
     from statistics import mean
-
     P = spec.get("poids", {})
     w_must = float(P.get("must_have", 40.0))
     w_nice = float(P.get("nice_to_have", 20.0))
@@ -428,7 +418,6 @@ def score_competences_embeddings(cv_text: str, spec: Dict[str, Any],
                 s = sim(sk); proofs["nice"].append((sk, round(s,3), sk if s >= thr_nice else ""))
                 sims_nice.append(max(0.0, s))
         except Exception:
-            # en cas d'erreur d'embeddings, on retombe sur le strict keyword
             LOW = cv_text.lower()
             def hit(skill: str) -> float:
                 return 1.0 if re.search(rf"(?<![a-z0-9_]){re.escape(skill.lower())}(?![a-z0-9_])", LOW) else 0.0
@@ -437,7 +426,6 @@ def score_competences_embeddings(cv_text: str, spec: Dict[str, Any],
             for sk in nice:
                 s = hit(sk); proofs["nice"].append((sk, s, sk if s >= 1.0 else "")); sims_nice.append(s)
     else:
-        # Fallback (OFFLINE) : keyword strict
         LOW = cv_text.lower()
         def hit(skill: str) -> float:
             return 1.0 if re.search(rf"(?<![a-z0-9_]){re.escape(skill.lower())}(?![a-z0-9_])", LOW) else 0.0
@@ -470,13 +458,6 @@ def _str(slot):
     return slot or ""
 
 def score_autres_criteres(ex: Dict[str, Any], spec: Dict[str, Any]) -> Tuple[float, str, Dict[str, Any]]:
-    """
-    Règles strictes :
-    - Expérience : points uniquement si un minimum est exigé (>0)
-    - Langues : points uniquement si des langues sont exigées ET niveau >= requis
-    - Diplômes/Certifs : points uniquement s'il y en a au moins un
-    - Localisation/Dispo : points uniquement si la spec impose la contrainte
-    """
     P = spec.get("poids", {})
     w_exp  = float(P.get("experience", 15))
     w_lang = float(P.get("langues", 10))
@@ -576,8 +557,8 @@ def _hash_text(t: str) -> str:
 def _extract_cached(h: str, text: str, model_id: str):
     return gpt_extract_profile_safe(text, model_id=model_id)
 
-# ----------------- UI onglets -----------------
-tab1, tab2, tab3 = st.tabs(["1) Fiche projet → spec", "2) Analyse CV", "3) Démo (cellule 10)"])
+# ----------------- UI onglets (❌ sans démo) -----------------
+tab1, tab2 = st.tabs(["1) Fiche projet → spec", "2) Analyse CV"])
 
 with tab1:
     _key_dbg = _get_openai_key(); _mask = (_key_dbg[:3]+"…"+_key_dbg[-4:]) if _key_dbg else "—"
@@ -679,63 +660,20 @@ Contraintes: style FR pro, phrases courtes, terminer par une recommandation."""}
                 st.download_button("Télécharger CSV", df.to_csv(index=False).encode("utf-8"),
                                    "resultats_cv.csv", "text/csv")
 
-with tab3:
-    st.write("**Cellule 10 : Test rapide**")
-    spec_demo = _renormalize_weights(validate_fill_spec({
-        "must_have": ["python","sql","power bi"],
-        "nice_to_have": ["airflow","docker"],
-        "experience_min_ans": 1,
-        "langues": {"fr":"B2","en":"B1"},
-        "poids": {"must_have":50,"nice_to_have":30,"experience":10,"langues":5,"diplomes_certifs":3,"localisation_dispo":2}
-    }))
-    cv_demo = """Mohamed Soulaimane — Data Analyst
-Compétences: Python, SQL, Airflow, Docker, Power BI
-Expérience: 2 ans en analytics et BI
-Langues: FR (C1), EN (B2)
-Localisation: Rabat-Salé
-Disponibilité: 2 semaines
-Certifications: Google Data Analytics
-Diplômes: Licence Informatique (2021)
-"""
-    if st.button("Lancer le test"):
-        ext = gpt_extract_profile_safe(cv_demo, model_id=MODEL_ID_DEFAULT)
-        ext = enforce_evidence(ext, cv_demo)
-        ext = fill_with_regex_if_missing(ext, cv_demo)
-        pts_mn, evid = score_competences_embeddings(cv_demo, spec_demo)
-        pts_autres, _, _ = score_autres_criteres(ext, spec_demo)
-        score = round(min(100.0, pts_mn + pts_autres), 2)
-        st.metric("SCORE_FINAL (demo)", f"{score} %")
-
 # === BRIDGE WORDPRESS — À COLLER À LA FIN DE app.py ===
-# (ne plante pas si WP_BASE/WP_TOKEN absents)
-# 0) Si tu n'as PAS déjà une variable `result`, on en fabrique une minimale pour tester
+import os as _os, requests as _req
+
+# Si aucun 'result' n'est produit plus haut, on en crée un minimal (affichage + envoi optionnel)
 if "result" not in locals():
-    prediction = locals().get("prediction") or locals().get("label") or "OK"
-    try:
-        score = float(locals().get("score") or 0.87)
-    except Exception:
-        score = 0.87
+    result = {"label": "OK", "score": 0.87, "lang": "fr", "theme": "light"}
+    st.json(result)  # affichage basique pour vérifier
 
-    # Récupère quelques params de la page WP (optionnel)
-    qp = getattr(st, "query_params", None)
-    qp = dict(qp) if qp is not None else st.experimental_get_query_params()
-    def _get(q, k, d):
-        v = q.get(k, d)
-        return (v[0] if isinstance(v, list) and v else v) or d
-    lang = _get(qp, "lang", "fr")
-    theme = _get(qp, "theme", "light")
+WP_BASE  = _os.getenv("WP_BASE")  or st.secrets.get("WP_BASE", "")
+WP_TOKEN = _os.getenv("WP_TOKEN") or st.secrets.get("WP_TOKEN", "")
 
-    result = {"label": str(prediction), "score": score, "lang": lang, "theme": theme}
-    st.json(result)  # affichage pour vérifier
-
-# 1) Secrets / variables d'environnement (ne fait PAS crasher si absents)
-WP_BASE  = os.getenv("WP_BASE")  or st.secrets.get("WP_BASE", "")
-WP_TOKEN = os.getenv("WP_TOKEN") or st.secrets.get("WP_TOKEN", "")
-
-# 2) Envoi vers WordPress uniquement si tout est configuré
 if WP_BASE and WP_TOKEN:
     try:
-        resp = requests.post(
+        resp = _req.post(
             f"{WP_BASE}/wp-json/streamlit-bridge/v1/result",
             json=result,
             headers={"X-Streamlit-Token": WP_TOKEN},
