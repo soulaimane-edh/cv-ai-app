@@ -22,54 +22,19 @@ from typing import Dict, Any, Tuple, List
 from pypdf import PdfReader
 from docx import Document
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ----------------- UI de base -----------------
 st.set_page_config(page_title="Analyse de CV (Notebook → App)", layout="wide")
 st.title("Analyse de CV — par ED-dahmani Soulaimane")
 
-# ----------------- Constantes / limites -----------------
-MODEL_ID_DEFAULT = "gpt-4o-mini"              # ou "gpt-5" / "gpt-4o-mini" suivant ton compte
+# ----------------- Modèle & options figés -----------------
+MODEL_ID_DEFAULT = "gpt-4o-mini"   # modèle figé
 EMB_MODEL        = "sentence-transformers/all-MiniLM-L6-v2"
+FORCE_OFFLINE    = False           # pas de bascule par l'utilisateur
 
+# ----------------- Constantes / limites -----------------
 MAX_MB        = int(st.secrets.get("limits", {}).get("MAX_FILE_MB", 5))
 MAX_PAGES     = int(st.secrets.get("limits", {}).get("MAX_PAGES", 8))
 LLM_MIN_DELAY = float(st.secrets.get("limits", {}).get("LLM_MIN_DELAY", 1.2))
-
-# ----------------- Sidebar : paramètres LLM -----------------
-with st.sidebar:
-    st.subheader("⚙️ Paramètres")
-    if "MODEL_ID" not in st.session_state:
-        st.session_state["MODEL_ID"] = MODEL_ID_DEFAULT
-    st.session_state["MODEL_ID"] = st.text_input(
-        "Model ID (OpenAI)", st.session_state["MODEL_ID"],
-        help="Ex: gpt-5, gpt-5-mini, gpt-4o-mini (doit être accessible sur ton compte API)"
-    )
-    st.session_state["FORCE_OFFLINE"] = st.checkbox(
-        "Forcer OFFLINE (aucun appel LLM)", value=False,
-        help="Si coché, la construction de spec et l'extraction n'utiliseront pas l'API."
-    )
 
 # ----------------- Clé OpenAI + appel HTTP (avec retries) -----------------
 def _get_openai_key() -> str:
@@ -287,11 +252,11 @@ Règles :
 
 def gpt_build_spec_from_text(fiche_texte: str, model_id: str = None) -> dict:
     """Spec via LLM ; fallback regex si l'appel échoue ou FORCE_OFFLINE."""
-    model_id = model_id or st.session_state.get("MODEL_ID", MODEL_ID_DEFAULT)
+    model_id = model_id or MODEL_ID_DEFAULT
     msgs = [{"role":"system","content":SPEC_SYSTEM},
             {"role":"user","content":fiche_texte}]
     try:
-        if st.session_state.get("FORCE_OFFLINE"):
+        if FORCE_OFFLINE:
             raise RuntimeError("FORCE_OFFLINE activé")
         txt = _chat_completion(model_id, msgs, temperature=0, max_tokens=700).strip()
         m = re.search(r"\{.*\}", txt, flags=re.S)
@@ -352,7 +317,7 @@ def offline_extract_from_text(cv_text: str) -> dict:
 
 def gpt_extract_profile_safe(cv_text: str, model_id: str = None) -> dict:
     """Extraction via LLM ; fallback offline si clé absente/erreur/forced."""
-    if st.session_state.get("FORCE_OFFLINE") or not _get_openai_key():
+    if FORCE_OFFLINE or not _get_openai_key():
         return offline_extract_from_text(cv_text)
 
     SYSTEM = """
@@ -368,7 +333,7 @@ def gpt_extract_profile_safe(cv_text: str, model_id: str = None) -> dict:
     }
     - N'INVENTE RIEN.
     """
-    model_id = model_id or st.session_state.get("MODEL_ID", MODEL_ID_DEFAULT)
+    model_id = model_id or MODEL_ID_DEFAULT
     msgs = [{"role":"system","content":SYSTEM},
             {"role":"user","content":cv_text[:120000]}]
 
@@ -633,7 +598,7 @@ with tab1:
             spec = validate_fill_spec(raw)
         else:
             text = read_text_generic_from_upload(sp_file)
-            spec = gpt_build_spec_from_text(text, model_id=st.session_state["MODEL_ID"])
+            spec = gpt_build_spec_from_text(text, model_id=MODEL_ID_DEFAULT)
 
         spec = _renormalize_weights(spec)
         st.session_state["spec"] = spec
@@ -661,7 +626,7 @@ with tab2:
 
                 # Extraction (cache + fallback)
                 cv_hash = _hash_text(cv_text)
-                extraction = _extract_cached(cv_hash, cv_text, st.session_state["MODEL_ID"])
+                extraction = _extract_cached(cv_hash, cv_text, MODEL_ID_DEFAULT)
                 extraction = enforce_evidence(extraction, cv_text)
                 extraction = fill_with_regex_if_missing(extraction, cv_text)
 
@@ -672,10 +637,10 @@ with tab2:
 
                 # Commentaire LLM (optionnel)
                 comment_rh = ""
-                if want_llm_comment and not st.session_state.get("FORCE_OFFLINE") and _get_openai_key():
+                if want_llm_comment and not FORCE_OFFLINE and _get_openai_key():
                     try:
                         comment_rh = _chat_completion(
-                            st.session_state["MODEL_ID"],
+                            MODEL_ID_DEFAULT,
                             [{"role":"user","content":f"""Rôle: assistant RH. Commentaire factuel (5–7 lignes).
 - Score final: {score_final} %
 - Preuves must (top): {sorted(evidences.get('must',[]), key=lambda x: x[1], reverse=True)[:3]}
@@ -733,7 +698,7 @@ Certifications: Google Data Analytics
 Diplômes: Licence Informatique (2021)
 """
     if st.button("Lancer le test"):
-        ext = gpt_extract_profile_safe(cv_demo, model_id=st.session_state["MODEL_ID"])
+        ext = gpt_extract_profile_safe(cv_demo, model_id=MODEL_ID_DEFAULT)
         ext = enforce_evidence(ext, cv_demo)
         ext = fill_with_regex_if_missing(ext, cv_demo)
         pts_mn, evid = score_competences_embeddings(cv_demo, spec_demo)
@@ -741,28 +706,8 @@ Diplômes: Licence Informatique (2021)
         score = round(min(100.0, pts_mn + pts_autres), 2)
         st.metric("SCORE_FINAL (demo)", f"{score} %")
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # === BRIDGE WORDPRESS — À COLLER À LA FIN DE app.py ===
-import os, requests, streamlit as st
-
+# (ne plante pas si WP_BASE/WP_TOKEN absents)
 # 0) Si tu n'as PAS déjà une variable `result`, on en fabrique une minimale pour tester
 if "result" not in locals():
     prediction = locals().get("prediction") or locals().get("label") or "OK"
