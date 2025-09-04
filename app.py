@@ -1,12 +1,6 @@
 # =========================================================
-# APP STREAMLIT — Analyse de CV (Notebook → App)
-# - LLM via API OpenAI (retries/backoff + fallback OFFLINE)
-# - Construction de spec (LLM -> fallback regex)
-# - Scoring façon notebook (similarité + règles) borné par la spec
-# - Règles strictes + renormalisation des poids = 100
-# - Option embeddings locale (all-MiniLM-L6-v2) activable
-# - ❌ Pas de sidebar modèle ; modèle fixé à gpt-4o-mini
-# - ❌ Onglet Démo (cellule 10) supprimé
+# APP STREAMLIT — Analyse de CV ()
+
 # =========================================================
 import io
 import os
