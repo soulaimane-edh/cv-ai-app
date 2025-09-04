@@ -684,4 +684,4 @@ if WP_BASE and WP_TOKEN:
     except Exception as e:
         st.caption(f"Envoi WordPress impossible : {e}")
 else:
-    st.caption("WP_BASE / WP_TOKEN non configurés — aucun envoi (l'app continue).")
+    st.caption("Powred by ED-dahmani Soulaimane (Alten Internship)")
