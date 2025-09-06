@@ -563,7 +563,7 @@ with tab1:
     if mode in ("UPLOAD_DOC","UPLOAD_JSON"):
         sp_file = st.file_uploader("Fiche projet (PDF/DOCX/TXT ou JSON)", type=["pdf","docx","txt","json"])
 
-    if st.button("Construire la spec (cellule 3)"):
+    if st.button("Construire la spec (Extraction des informations depuis la fiche de projet)"):
         if mode == "MANUAL":
             spec = validate_fill_spec(DEFAULT_SPEC)
         elif not sp_file:
