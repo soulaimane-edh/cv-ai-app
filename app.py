@@ -18,7 +18,7 @@ from docx import Document
 
 # ----------------- UI de base -----------------
 st.set_page_config(page_title="Analyse de CV (Notebook → App)", layout="wide")
-st.title("Analyse de CV — par ED-dahmani Soulaimane")
+st.title("CVout - Analyse de CV")
 
 # ----------------- Constantes / limites -----------------
 MODEL_ID_DEFAULT = "gpt-4o-mini"              # modèle OpenAI fixé
