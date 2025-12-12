@@ -1,0 +1,13 @@
+.git
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
+.vscode/
+.devcontainer/
+.streamlit/secrets.toml
+*.pdf
+*.docx
+resultats_cv.csv
