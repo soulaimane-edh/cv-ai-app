@@ -30,18 +30,24 @@ FORCE_OFFLINE    = False                      # met à True si tu veux forcer SA
 
 
 
-def _safe_secrets():
+def _get_env_int(name: str, default: int) -> int:
     try:
-        return st.secrets
+        return int(os.getenv(name, default))
     except Exception:
-        return {}
+        return default
 
-_secrets = _safe_secrets()
-_limits = (_secrets.get("limits", {}) or {})
+def _get_env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except Exception:
+        return default
 
-MAX_MB = int(os.getenv("MAX_FILE_MB", _limits.get("MAX_FILE_MB", 5)))
-MAX_PAGES = int(os.getenv("MAX_PAGES", _limits.get("MAX_PAGES", 8)))
-LLM_MIN_DELAY = float(os.getenv("LLM_MIN_DELAY", _limits.get("LLM_MIN_DELAY", 1.2)))
+# Limites (Azure App Settings -> Environment variables)
+MAX_MB        = _get_env_int("MAX_FILE_MB", 5)
+MAX_PAGES     = _get_env_int("MAX_PAGES", 8)
+LLM_MIN_DELAY = _get_env_float("LLM_MIN_DELAY", 1.2)
+
+
 
 
 # ----------------- Clé OpenAI + appel HTTP (avec retries) -----------------
