@@ -25,9 +25,24 @@ MODEL_ID_DEFAULT = "gpt-4o-mini"              # modèle OpenAI fixé
 EMB_MODEL        = "sentence-transformers/all-MiniLM-L6-v2"
 FORCE_OFFLINE    = False                      # met à True si tu veux forcer SANS LLM
 
-MAX_MB        = int(st.secrets.get("limits", {}).get("MAX_FILE_MB", 5))
-MAX_PAGES     = int(st.secrets.get("limits", {}).get("MAX_PAGES", 8))
-LLM_MIN_DELAY = float(st.secrets.get("limits", {}).get("LLM_MIN_DELAY", 1.2))
+
+
+
+
+
+def _safe_secrets():
+    try:
+        return st.secrets
+    except Exception:
+        return {}
+
+_secrets = _safe_secrets()
+_limits = (_secrets.get("limits", {}) or {})
+
+MAX_MB = int(os.getenv("MAX_FILE_MB", _limits.get("MAX_FILE_MB", 5)))
+MAX_PAGES = int(os.getenv("MAX_PAGES", _limits.get("MAX_PAGES", 8)))
+LLM_MIN_DELAY = float(os.getenv("LLM_MIN_DELAY", _limits.get("LLM_MIN_DELAY", 1.2)))
+
 
 # ----------------- Clé OpenAI + appel HTTP (avec retries) -----------------
 def _get_openai_key() -> str:
