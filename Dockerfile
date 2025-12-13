@@ -2,17 +2,16 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# dépendances système (utile pour pypdf/docx/torch selon cas)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl \
- && rm -rf /var/lib/apt/lists/*
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-EXPOSE 8501
+EXPOSE 8000
 
-# Streamlit en mode container
-CMD ["sh", "-c", "streamlit run app.py --server.address=0.0.0.0 --server.port=8501 --server.headless=true"]
+# IMPORTANT: on démarre FASTAPI (api.py)
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
