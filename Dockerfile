@@ -18,4 +18,4 @@ RUN mkdir -p uploads temp
 EXPOSE 8000
 
 # Commande de démarrage avec gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "--timeout", "120", "app:app"]
+CMD ["streamlit", "run", "app.py", "--server.port=8000", "--server.address=0.0.0.0"]
