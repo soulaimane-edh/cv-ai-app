@@ -63,10 +63,17 @@ LLM_MIN_DELAY = float(get_conf("LLM_MIN_DELAY", "limits", "LLM_MIN_DELAY", 1.2))
 
 # ----------------- Clé OpenAI + appel HTTP (avec retries) -----------------
 def _get_openai_key() -> str:
-    key = (st.secrets.get("llm", {}) or {}).get("OPENAI_API_KEY")
-    key = key or st.secrets.get("OPENAI_API_KEY")
-    key = key or os.getenv("OPENAI_API_KEY")
-    return (str(key).strip() if key else "")
+    # 1. Check Env Var direct
+    if os.getenv("OPENAI_API_KEY"):
+        return os.getenv("OPENAI_API_KEY").strip()
+    
+    # 2. Check st.secrets (safe)
+    try:
+        key = (st.secrets.get("llm", {}) or {}).get("OPENAI_API_KEY")
+        key = key or st.secrets.get("OPENAI_API_KEY")
+        return (str(key).strip() if key else "")
+    except FileNotFoundError:
+        return ""
 
 def _chat_completion(model: str, messages: list, temperature: float = 0, max_tokens: int = 700,
                      retries: int = 4) -> str:
