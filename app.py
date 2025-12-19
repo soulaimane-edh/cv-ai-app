@@ -25,9 +25,41 @@ MODEL_ID_DEFAULT = "gpt-4o-mini"              # modèle OpenAI fixé
 EMB_MODEL        = "sentence-transformers/all-MiniLM-L6-v2"
 FORCE_OFFLINE    = False                      # met à True si tu veux forcer SANS LLM
 
-MAX_MB        = int(st.secrets.get("limits", {}).get("MAX_FILE_MB", 5))
-MAX_PAGES     = int(st.secrets.get("limits", {}).get("MAX_PAGES", 8))
-LLM_MIN_DELAY = float(st.secrets.get("limits", {}).get("LLM_MIN_DELAY", 1.2))
+
+
+
+
+
+
+# ----------------- Constantes / limites -----------------
+MODEL_ID_DEFAULT = "gpt-4o-mini"
+EMB_MODEL        = "sentence-transformers/all-MiniLM-L6-v2"
+FORCE_OFFLINE    = False
+
+# Fonction sécurisée pour récupérer la config (Env Var > Secrets > Défaut)
+def get_conf(key_env, section, key_secret, default):
+    # 1. Regarde dans les variables d'environnement (Azure)
+    val = os.getenv(key_env)
+    if val is not None:
+        return val
+    # 2. Essaie st.secrets (Local), ignore l'erreur si fichier absent
+    try:
+        return st.secrets.get(section, {}).get(key_secret, default)
+    except FileNotFoundError:
+        return default
+
+MAX_MB        = int(get_conf("MAX_FILE_MB", "limits", "MAX_FILE_MB", 5))
+MAX_PAGES     = int(get_conf("MAX_PAGES", "limits", "MAX_PAGES", 8))
+LLM_MIN_DELAY = float(get_conf("LLM_MIN_DELAY", "limits", "LLM_MIN_DELAY", 1.2))
+
+
+
+
+
+
+
+
+
 
 # ----------------- Clé OpenAI + appel HTTP (avec retries) -----------------
 def _get_openai_key() -> str:
