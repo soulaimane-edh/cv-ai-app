@@ -701,8 +701,31 @@ if "result" not in locals():
     result = {"label": "OK", "score": 0.87, "lang": "fr", "theme": "light"}
     st.json(result)  # affichage basique pour vérifier
 
-WP_BASE  = _os.getenv("WP_BASE")  or st.secrets.get("WP_BASE", "")
-WP_TOKEN = _os.getenv("WP_TOKEN") or st.secrets.get("WP_TOKEN", "")
+
+
+
+
+
+
+# Remplacement sécurisé à la fin de app.py
+WP_BASE = os.getenv("WP_BASE", "")
+WP_TOKEN = os.getenv("WP_TOKEN", "")
+
+# On ne sollicite st.secrets QUE si on est en local et que le fichier existe
+if not WP_BASE:
+    try:
+        WP_BASE = st.secrets.get("WP_BASE", "")
+        WP_TOKEN = st.secrets.get("WP_TOKEN", "")
+    except:
+        pass
+
+
+
+
+
+
+
+
 
 if WP_BASE and WP_TOKEN:
     try:
