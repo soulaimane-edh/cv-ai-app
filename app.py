@@ -38,15 +38,17 @@ FORCE_OFFLINE    = False
 
 # Fonction sécurisée pour récupérer la config (Env Var > Secrets > Défaut)
 def get_conf(key_env, section, key_secret, default):
-    # 1. Toujours vérifier l'OS Environment en premier
+    # 1. On cherche d'abord dans l'environnement Azure
     val = os.getenv(key_env)
     if val is not None:
         return val
-    # 2. Accès sécurisé aux secrets
-    try:
-        return st.secrets.get(section, {}).get(key_secret, default)
-    except Exception: # Capture l'absence de fichier .toml
-        return default
+    # 2. On ne tente Streamlit QUE si on est en local (fichier présent)
+    if os.path.exists(".streamlit/secrets.toml"):
+        try:
+            return st.secrets.get(section, {}).get(key_secret, default)
+        except:
+            return default
+    return default
 
 MAX_MB        = int(get_conf("MAX_FILE_MB", "limits", "MAX_FILE_MB", 5))
 MAX_PAGES     = int(get_conf("MAX_PAGES", "limits", "MAX_PAGES", 8))
@@ -64,19 +66,18 @@ LLM_MIN_DELAY = float(get_conf("LLM_MIN_DELAY", "limits", "LLM_MIN_DELAY", 1.2))
 # ----------------- Clé OpenAI + appel HTTP (avec retries) -----------------
 
 def _get_openai_key() -> str:
-    # 1. Priorité absolue aux variables d'environnement (Azure)
-    key = os.getenv("OPENAI_API_KEY")
-    if key:
-        return key.strip()
+    # 1. Priorité aux variables d'environnement Azure
+    env_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if env_key:
+        return env_key
     
-    # 2. Fallback local (secrets.toml) uniquement si le fichier est présent
-    try:
-        if os.path.exists(".streamlit/secrets.toml"):
+    # 2. Fallback local sécurisé
+    if os.path.exists(".streamlit/secrets.toml"):
+        try:
             key = (st.secrets.get("llm", {}) or {}).get("OPENAI_API_KEY")
-            key = key or st.secrets.get("OPENAI_API_KEY")
-            return (str(key).strip() if key else "")
-    except Exception:
-        pass
+            return str(key or st.secrets.get("OPENAI_API_KEY", "")).strip()
+        except:
+            return ""
     return ""
 
 
@@ -714,19 +715,17 @@ if "result" not in locals():
 
 
 # === BRIDGE WORDPRESS SÉCURISÉ ===
+# === BRIDGE WORDPRESS (Remplacement sécurisé) ===
 WP_BASE = os.getenv("WP_BASE", "")
 WP_TOKEN = os.getenv("WP_TOKEN", "")
 
-# On ne tente st.secrets que si les variables d'environnement sont vides
-if not WP_BASE:
+# Si les variables ne sont pas dans Azure, on tente le local sans crasher
+if not WP_BASE and os.path.exists(".streamlit/secrets.toml"):
     try:
-        # On vérifie l'existence du fichier pour éviter le crash FileNotFoundError
-        if os.path.exists(".streamlit/secrets.toml"):
-            WP_BASE = st.secrets.get("WP_BASE", "")
-            WP_TOKEN = st.secrets.get("WP_TOKEN", "")
-    except Exception:
+        WP_BASE = st.secrets.get("WP_BASE", "")
+        WP_TOKEN = st.secrets.get("WP_TOKEN", "")
+    except:
         pass
-
 
 
 
