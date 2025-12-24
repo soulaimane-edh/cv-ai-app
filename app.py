@@ -713,18 +713,19 @@ if "result" not in locals():
 
 
 
-# Remplacement sécurisé à la fin de app.py
+# === BRIDGE WORDPRESS SÉCURISÉ ===
 WP_BASE = os.getenv("WP_BASE", "")
 WP_TOKEN = os.getenv("WP_TOKEN", "")
 
-# On ne sollicite st.secrets QUE si on est en local et que le fichier existe
+# On ne tente st.secrets que si les variables d'environnement sont vides
 if not WP_BASE:
     try:
-        WP_BASE = st.secrets.get("WP_BASE", "")
-        WP_TOKEN = st.secrets.get("WP_TOKEN", "")
-    except:
+        # On vérifie l'existence du fichier pour éviter le crash FileNotFoundError
+        if os.path.exists(".streamlit/secrets.toml"):
+            WP_BASE = st.secrets.get("WP_BASE", "")
+            WP_TOKEN = st.secrets.get("WP_TOKEN", "")
+    except Exception:
         pass
-
 
 
 
