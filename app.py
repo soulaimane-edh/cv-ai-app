@@ -38,14 +38,14 @@ FORCE_OFFLINE    = False
 
 # Fonction sécurisée pour récupérer la config (Env Var > Secrets > Défaut)
 def get_conf(key_env, section, key_secret, default):
-    # 1. Regarde dans les variables d'environnement (Azure)
+    # 1. Toujours vérifier l'OS Environment en premier
     val = os.getenv(key_env)
     if val is not None:
         return val
-    # 2. Essaie st.secrets (Local), ignore l'erreur si fichier absent
+    # 2. Accès sécurisé aux secrets
     try:
         return st.secrets.get(section, {}).get(key_secret, default)
-    except FileNotFoundError:
+    except Exception: # Capture l'absence de fichier .toml
         return default
 
 MAX_MB        = int(get_conf("MAX_FILE_MB", "limits", "MAX_FILE_MB", 5))
