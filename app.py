@@ -83,8 +83,8 @@ def _get_openai_key() -> str:
 
 
 def _chat_completion(model: str, messages: list, temperature: float = 0, max_tokens: int = 700,
-                     retries: int = 2) -> str: # Réduit à 2 tentatives pour éviter le timeout Azure
-    """Appel /v1/chat/completions optimisé pour éviter le Gateway Timeout Azure."""
+                     retries: int = 2) -> str:
+    """Version ultra-rapide pour éviter le Gateway Timeout Azure."""
     key = _get_openai_key()
     if not key or not key.startswith("sk-"):
         raise RuntimeError("OPENAI_API_KEY absente ou invalide.")
@@ -92,49 +92,22 @@ def _chat_completion(model: str, messages: list, temperature: float = 0, max_tok
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
-    # --- OPTIMISATION : Accès direct à os.getenv (beaucoup plus rapide que st.secrets) ---
+    # --- Accès direct aux variables d'environnement (Pas de st.secrets ici) ---
     org = os.getenv("OPENAI_ORG")
     proj = os.getenv("OPENAI_PROJECT")
-    
-    # On ne cherche st.secrets QUE si on est en local (test rapide d'existence de fichier)
-    if not org and os.path.exists(".streamlit/secrets.toml"):
-        try:
-            org = st.secrets.get("llm", {}).get("OPENAI_ORG")
-            proj = st.secrets.get("llm", {}).get("OPENAI_PROJECT")
-        except:
-            pass
-
     if org: headers["OpenAI-Organization"] = org
     if proj: headers["OpenAI-Project"] = proj
 
     payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
-
-    delay = 1.0 # Délai réduit
-    last_err = ""
     
-    for attempt in range(retries):
-        try:
-            # OPTIMISATION : Timeout réduit à 15s au lieu de 90s pour ne pas bloquer le Gateway Azure
-            resp = requests.post(url, headers=headers, json=payload, timeout=15)
-            
-            if resp.status_code == 200:
-                return resp.json()["choices"][0]["message"]["content"]
-            
-            if resp.status_code in (429, 500, 502, 503, 504):
-                last_err = f"HTTP {resp.status_code}"
-                time.sleep(delay * (attempt + 1))
-                continue
-            
-            raise RuntimeError(f"OpenAI Error {resp.status_code}: {resp.text[:100]}")
-            
-        except requests.exceptions.Timeout:
-            last_err = "Timeout de la requête OpenAI"
-            continue
-        except Exception as e:
-            last_err = str(e)
-            continue
-
-    raise RuntimeError(f"Requête impossible (Timeout ou Erreur API). Dernier log: {last_err}")
+    # Timeout de requête court (15s) pour ne pas bloquer la passerelle Azure
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=15)
+        if resp.status_code == 200:
+            return resp.json()["choices"][0]["message"]["content"]
+        raise RuntimeError(f"OpenAI Error {resp.status_code}")
+    except Exception as e:
+        raise RuntimeError(f"Erreur API: {str(e)}")
 # ----------------- Outils lecture fichiers/texte -----------------
 def _extract_text_pdf_bytes(b: bytes, max_pages=MAX_PAGES) -> str:
     r = PdfReader(io.BytesIO(b))
