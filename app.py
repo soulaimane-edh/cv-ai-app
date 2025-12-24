@@ -91,10 +91,22 @@ def _chat_completion(model: str, messages: list, temperature: float = 0, max_tok
 
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-    org  = (st.secrets.get("llm", {}) or {}).get("OPENAI_ORG")     or os.getenv("OPENAI_ORG")
-    proj = (st.secrets.get("llm", {}) or {}).get("OPENAI_PROJECT") or os.getenv("OPENAI_PROJECT")
+
+    # --- RÉCUPÉRATION SÉCURISÉE DES HEADERS OPTIONNELS (Azure ou Local) ---
+    org = os.getenv("OPENAI_ORG")
+    proj = os.getenv("OPENAI_PROJECT")
+
+    # On ne tente st.secrets que si on est en local et que le fichier existe
+    if not org and os.path.exists(".streamlit/secrets.toml"):
+        try:
+            org = (st.secrets.get("llm", {}) or {}).get("OPENAI_ORG")
+            proj = (st.secrets.get("llm", {}) or {}).get("OPENAI_PROJECT")
+        except:
+            pass
+
     if org:  headers["OpenAI-Organization"] = org
     if proj: headers["OpenAI-Project"]      = proj
+    # -----------------------------------------------------------------------
 
     payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
 
@@ -121,7 +133,6 @@ def _chat_completion(model: str, messages: list, temperature: float = 0, max_tok
         raise RuntimeError(f"OpenAI HTTP {resp.status_code}: {resp.text[:300]}")
 
     raise RuntimeError(f"OpenAI indisponible après retries. Dernier message: {last_err}")
-
 # ----------------- Outils lecture fichiers/texte -----------------
 def _extract_text_pdf_bytes(b: bytes, max_pages=MAX_PAGES) -> str:
     r = PdfReader(io.BytesIO(b))
