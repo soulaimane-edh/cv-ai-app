@@ -38,17 +38,15 @@ FORCE_OFFLINE    = False
 
 # Fonction sécurisée pour récupérer la config (Env Var > Secrets > Défaut)
 def get_conf(key_env, section, key_secret, default):
-    # 1. On cherche d'abord dans l'environnement Azure
+    # 1. Regarde dans les variables d'environnement (Azure)
     val = os.getenv(key_env)
     if val is not None:
         return val
-    # 2. On ne tente Streamlit QUE si on est en local (fichier présent)
-    if os.path.exists(".streamlit/secrets.toml"):
-        try:
-            return st.secrets.get(section, {}).get(key_secret, default)
-        except:
-            return default
-    return default
+    # 2. Essaie st.secrets (Local), ignore l'erreur si fichier absent
+    try:
+        return st.secrets.get(section, {}).get(key_secret, default)
+    except FileNotFoundError:
+        return default
 
 MAX_MB        = int(get_conf("MAX_FILE_MB", "limits", "MAX_FILE_MB", 5))
 MAX_PAGES     = int(get_conf("MAX_PAGES", "limits", "MAX_PAGES", 8))
@@ -66,48 +64,63 @@ LLM_MIN_DELAY = float(get_conf("LLM_MIN_DELAY", "limits", "LLM_MIN_DELAY", 1.2))
 # ----------------- Clé OpenAI + appel HTTP (avec retries) -----------------
 
 def _get_openai_key() -> str:
-    # 1. Priorité aux variables d'environnement Azure
-    env_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if env_key:
-        return env_key
+    # 1. Priorité absolue aux variables d'environnement (Azure)
+    key = os.getenv("OPENAI_API_KEY")
+    if key:
+        return key.strip()
     
-    # 2. Fallback local sécurisé
-    if os.path.exists(".streamlit/secrets.toml"):
-        try:
+    # 2. Fallback local (secrets.toml) uniquement si le fichier est présent
+    try:
+        if os.path.exists(".streamlit/secrets.toml"):
             key = (st.secrets.get("llm", {}) or {}).get("OPENAI_API_KEY")
-            return str(key or st.secrets.get("OPENAI_API_KEY", "")).strip()
-        except:
-            return ""
+            key = key or st.secrets.get("OPENAI_API_KEY")
+            return (str(key).strip() if key else "")
+    except Exception:
+        pass
     return ""
 
 
 
 def _chat_completion(model: str, messages: list, temperature: float = 0, max_tokens: int = 700,
-                     retries: int = 2) -> str:
-    """Version ultra-rapide pour éviter le Gateway Timeout Azure."""
+                     retries: int = 4) -> str:
+    """Appel /v1/chat/completions avec retries + respect de Retry-After."""
     key = _get_openai_key()
     if not key or not key.startswith("sk-"):
-        raise RuntimeError("OPENAI_API_KEY absente ou invalide.")
+        raise RuntimeError("OPENAI_API_KEY absente/invalide (Settings → Secrets).")
 
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-
-    # --- Accès direct aux variables d'environnement (Pas de st.secrets ici) ---
-    org = os.getenv("OPENAI_ORG")
-    proj = os.getenv("OPENAI_PROJECT")
-    if org: headers["OpenAI-Organization"] = org
-    if proj: headers["OpenAI-Project"] = proj
+    org  = (st.secrets.get("llm", {}) or {}).get("OPENAI_ORG")     or os.getenv("OPENAI_ORG")
+    proj = (st.secrets.get("llm", {}) or {}).get("OPENAI_PROJECT") or os.getenv("OPENAI_PROJECT")
+    if org:  headers["OpenAI-Organization"] = org
+    if proj: headers["OpenAI-Project"]      = proj
 
     payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
-    
-    # Timeout de requête court (15s) pour ne pas bloquer la passerelle Azure
-    try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=15)
+
+    delay = 2.0
+    last_err = ""
+    for attempt in range(retries):
+        resp = requests.post(url, headers=headers, json=payload, timeout=90)
         if resp.status_code == 200:
-            return resp.json()["choices"][0]["message"]["content"]
-        raise RuntimeError(f"OpenAI Error {resp.status_code}")
-    except Exception as e:
-        raise RuntimeError(f"Erreur API: {str(e)}")
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+
+        if resp.status_code in (429, 500, 502, 503, 504):
+            last_err = resp.text[:300]
+            ra = resp.headers.get("retry-after")
+            if ra:
+                try:
+                    delay = max(delay, float(ra))
+                except Exception:
+                    pass
+            time.sleep(delay + 0.2 * attempt)
+            delay = min(delay * 2, 20.0)
+            continue
+
+        raise RuntimeError(f"OpenAI HTTP {resp.status_code}: {resp.text[:300]}")
+
+    raise RuntimeError(f"OpenAI indisponible après retries. Dernier message: {last_err}")
+
 # ----------------- Outils lecture fichiers/texte -----------------
 def _extract_text_pdf_bytes(b: bytes, max_pages=MAX_PAGES) -> str:
     r = PdfReader(io.BytesIO(b))
@@ -687,41 +700,50 @@ Contraintes: style FR pro, phrases courtes, terminer par une recommandation."""}
                                    "resultats_cv.csv", "text/csv")
 
 # === BRIDGE WORDPRESS — À COLLER À LA FIN DE app.py ===
-# === BRIDGE WORDPRESS FINAL ET SÉCURISÉ ===
 import os as _os, requests as _req
 
-# On récupère les accès de manière sécurisée
-WP_BASE = _os.getenv("WP_BASE", "")
-WP_TOKEN = _os.getenv("WP_TOKEN", "")
+# Si aucun 'result' n'est produit plus haut, on en crée un minimal (affichage + envoi optionnel)
+if "result" not in locals():
+    result = {"label": "OK", "score": 0.87, "lang": "fr", "theme": "light"}
+    st.json(result)  # affichage basique pour vérifier
 
-if not WP_BASE and os.path.exists(".streamlit/secrets.toml"):
+
+
+
+
+
+
+# Remplacement sécurisé à la fin de app.py
+WP_BASE = os.getenv("WP_BASE", "")
+WP_TOKEN = os.getenv("WP_TOKEN", "")
+
+# On ne sollicite st.secrets QUE si on est en local et que le fichier existe
+if not WP_BASE:
     try:
         WP_BASE = st.secrets.get("WP_BASE", "")
         WP_TOKEN = st.secrets.get("WP_TOKEN", "")
-    except: pass
+    except:
+        pass
 
-# CONDITION CRUCIALE : On n'envoie à WordPress que si 'rows' existe (donc après une analyse)
-if WP_BASE and WP_TOKEN and "rows" in locals() and rows:
+
+
+
+
+
+
+
+
+if WP_BASE and WP_TOKEN:
     try:
-        # On prépare le résultat réel du premier CV analysé
-        final_result = {
-            "label": "Analyse CV",
-            "score": rows[0]["score_final"],
-            "fichier": rows[0]["fichier"],
-            "status": "success"
-        }
-        
         resp = _req.post(
             f"{WP_BASE}/wp-json/streamlit-bridge/v1/result",
-            json=final_result,
+            json=result,
             headers={"X-Streamlit-Token": WP_TOKEN},
-            timeout=5 # Timeout très court pour ne pas bloquer l'interface
+            timeout=10
         )
-        if resp.status_code == 200:
-            st.sidebar.success("Résultat synchronisé avec WordPress ✅")
+        resp.raise_for_status()
+        st.caption("Résultat envoyé à WordPress ✅")
     except Exception as e:
-        st.sidebar.warning(f"Liaison WordPress inactive")
-
-# Pied de page simple si pas de config
-if not WP_BASE:
-    st.caption("Powered by ED-dahmani Soulaimane (Alten Internship)")
+        st.caption(f"Envoi WordPress impossible : {e}")
+else:
+    st.caption("Powred by ED-dahmani Soulaimane (Alten Internship)")
