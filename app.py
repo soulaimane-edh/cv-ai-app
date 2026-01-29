@@ -687,41 +687,49 @@ Contraintes: style FR pro, phrases courtes, terminer par une recommandation."""}
                                    "resultats_cv.csv", "text/csv")
 
 # === BRIDGE WORDPRESS — À COLLER À LA FIN DE app.py ===
-# === BRIDGE WORDPRESS FINAL ET SÉCURISÉ ===
 import os as _os, requests as _req
 
-# On récupère les accès de manière sécurisée
-WP_BASE = _os.getenv("WP_BASE", "")
-WP_TOKEN = _os.getenv("WP_TOKEN", "")
+# Si aucun 'result' n'est produit plus haut, on en crée un minimal (affichage + envoi optionnel)
+if "result" not in locals():
+    result = {"label": "OK", "score": 0.87, "lang": "fr", "theme": "light"}
+    st.json(result)  # affichage basique pour vérifier
 
+
+
+
+
+
+
+# === BRIDGE WORDPRESS SÉCURISÉ ===
+# === BRIDGE WORDPRESS (Remplacement sécurisé) ===
+WP_BASE = os.getenv("WP_BASE", "")
+WP_TOKEN = os.getenv("WP_TOKEN", "")
+
+# Si les variables ne sont pas dans Azure, on tente le local sans crasher
 if not WP_BASE and os.path.exists(".streamlit/secrets.toml"):
     try:
         WP_BASE = st.secrets.get("WP_BASE", "")
         WP_TOKEN = st.secrets.get("WP_TOKEN", "")
-    except: pass
+    except:
+        pass
 
-# CONDITION CRUCIALE : On n'envoie à WordPress que si 'rows' existe (donc après une analyse)
-if WP_BASE and WP_TOKEN and "rows" in locals() and rows:
+
+
+
+
+
+
+if WP_BASE and WP_TOKEN:
     try:
-        # On prépare le résultat réel du premier CV analysé
-        final_result = {
-            "label": "Analyse CV",
-            "score": rows[0]["score_final"],
-            "fichier": rows[0]["fichier"],
-            "status": "success"
-        }
-        
         resp = _req.post(
             f"{WP_BASE}/wp-json/streamlit-bridge/v1/result",
-            json=final_result,
+            json=result,
             headers={"X-Streamlit-Token": WP_TOKEN},
-            timeout=5 # Timeout très court pour ne pas bloquer l'interface
+            timeout=10
         )
-        if resp.status_code == 200:
-            st.sidebar.success("Résultat synchronisé avec WordPress ✅")
+        resp.raise_for_status()
+        st.caption("Résultat envoyé à WordPress ✅")
     except Exception as e:
-        st.sidebar.warning(f"Liaison WordPress inactive")
-
-# Pied de page simple si pas de config
-if not WP_BASE:
-    st.caption("Powered by ED-dahmani Soulaimane (Alten Internship)")
+        st.caption(f"Envoi WordPress impossible : {e}")
+else:
+    st.caption("Powred by ED-dahmani Soulaimane (Alten Internship)")
