@@ -62,24 +62,11 @@ LLM_MIN_DELAY = float(get_conf("LLM_MIN_DELAY", "limits", "LLM_MIN_DELAY", 1.2))
 
 
 # ----------------- Clé OpenAI + appel HTTP (avec retries) -----------------
-
 def _get_openai_key() -> str:
-    # 1. Priorité absolue aux variables d'environnement (Azure)
-    key = os.getenv("OPENAI_API_KEY")
-    if key:
-        return key.strip()
-    
-    # 2. Fallback local (secrets.toml) uniquement si le fichier est présent
-    try:
-        if os.path.exists(".streamlit/secrets.toml"):
-            key = (st.secrets.get("llm", {}) or {}).get("OPENAI_API_KEY")
-            key = key or st.secrets.get("OPENAI_API_KEY")
-            return (str(key).strip() if key else "")
-    except Exception:
-        pass
-    return ""
-
-
+    key = (st.secrets.get("llm", {}) or {}).get("OPENAI_API_KEY")
+    key = key or st.secrets.get("OPENAI_API_KEY")
+    key = key or os.getenv("OPENAI_API_KEY")
+    return (str(key).strip() if key else "")
 
 def _chat_completion(model: str, messages: list, temperature: float = 0, max_tokens: int = 700,
                      retries: int = 4) -> str:
@@ -707,31 +694,8 @@ if "result" not in locals():
     result = {"label": "OK", "score": 0.87, "lang": "fr", "theme": "light"}
     st.json(result)  # affichage basique pour vérifier
 
-
-
-
-
-
-
-# Remplacement sécurisé à la fin de app.py
-WP_BASE = os.getenv("WP_BASE", "")
-WP_TOKEN = os.getenv("WP_TOKEN", "")
-
-# On ne sollicite st.secrets QUE si on est en local et que le fichier existe
-if not WP_BASE:
-    try:
-        WP_BASE = st.secrets.get("WP_BASE", "")
-        WP_TOKEN = st.secrets.get("WP_TOKEN", "")
-    except:
-        pass
-
-
-
-
-
-
-
-
+WP_BASE  = _os.getenv("WP_BASE")  or st.secrets.get("WP_BASE", "")
+WP_TOKEN = _os.getenv("WP_TOKEN") or st.secrets.get("WP_TOKEN", "")
 
 if WP_BASE and WP_TOKEN:
     try:
