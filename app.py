@@ -1,5 +1,6 @@
 # =========================================================
-# APP STREAMLIT — Analyse de CV (Version Complète & Corrigée)
+# APP STREAMLIT — Analyse de CV ()
+
 # =========================================================
 import io
 import os
@@ -24,84 +25,95 @@ MODEL_ID_DEFAULT = "gpt-4o-mini"              # modèle OpenAI fixé
 EMB_MODEL        = "sentence-transformers/all-MiniLM-L6-v2"
 FORCE_OFFLINE    = False                      # met à True si tu veux forcer SANS LLM
 
+
+
+
+
+
+
+# ----------------- Constantes / limites -----------------
+MODEL_ID_DEFAULT = "gpt-4o-mini"
+EMB_MODEL        = "sentence-transformers/all-MiniLM-L6-v2"
+FORCE_OFFLINE    = False
+
 # Fonction sécurisée pour récupérer la config (Env Var > Secrets > Défaut)
 def get_conf(key_env, section, key_secret, default):
-    # 1. On cherche d'abord dans l'environnement Azure
+    # 1. Regarde dans les variables d'environnement (Azure)
     val = os.getenv(key_env)
     if val is not None:
         return val
-    # 2. On ne tente Streamlit QUE si on est en local (fichier présent)
-    if os.path.exists(".streamlit/secrets.toml"):
-        try:
-            return st.secrets.get(section, {}).get(key_secret, default)
-        except:
-            return default
-    return default
+    # 2. Essaie st.secrets (Local), ignore l'erreur si fichier absent
+    try:
+        return st.secrets.get(section, {}).get(key_secret, default)
+    except FileNotFoundError:
+        return default
 
 MAX_MB        = int(get_conf("MAX_FILE_MB", "limits", "MAX_FILE_MB", 5))
 MAX_PAGES     = int(get_conf("MAX_PAGES", "limits", "MAX_PAGES", 8))
 LLM_MIN_DELAY = float(get_conf("LLM_MIN_DELAY", "limits", "LLM_MIN_DELAY", 1.2))
 
-# ----------------- Clé OpenAI + appel HTTP (avec retries) -----------------
 
+
+
+
+
+
+
+
+
+# ----------------- Clé OpenAI + appel HTTP (avec retries) -----------------
 def _get_openai_key() -> str:
-    # 1. Priorité aux variables d'environnement Azure
-    env_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if env_key:
-        return env_key
+    # 1. Check Env Var direct
+    if os.getenv("OPENAI_API_KEY"):
+        return os.getenv("OPENAI_API_KEY").strip()
     
-    # 2. Fallback local sécurisé
-    if os.path.exists(".streamlit/secrets.toml"):
-        try:
-            key = (st.secrets.get("llm", {}) or {}).get("OPENAI_API_KEY")
-            return str(key or st.secrets.get("OPENAI_API_KEY", "")).strip()
-        except:
-            return ""
-    return ""
+    # 2. Check st.secrets (safe)
+    try:
+        key = (st.secrets.get("llm", {}) or {}).get("OPENAI_API_KEY")
+        key = key or st.secrets.get("OPENAI_API_KEY")
+        return (str(key).strip() if key else "")
+    except FileNotFoundError:
+        return ""
 
 def _chat_completion(model: str, messages: list, temperature: float = 0, max_tokens: int = 700,
-                     retries: int = 3) -> str:
-    """Version avec gestion réelle des tentatives et de l'erreur 429."""
+                     retries: int = 4) -> str:
+    """Appel /v1/chat/completions avec retries + respect de Retry-After."""
     key = _get_openai_key()
     if not key or not key.startswith("sk-"):
-        raise RuntimeError("OPENAI_API_KEY absente ou invalide.")
+        raise RuntimeError("OPENAI_API_KEY absente/invalide (Settings → Secrets).")
 
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-
-    # --- Accès direct aux variables d'environnement ---
-    org = os.getenv("OPENAI_ORG")
-    proj = os.getenv("OPENAI_PROJECT")
-    if org: headers["OpenAI-Organization"] = org
-    if proj: headers["OpenAI-Project"] = proj
+    org  = (st.secrets.get("llm", {}) or {}).get("OPENAI_ORG")     or os.getenv("OPENAI_ORG")
+    proj = (st.secrets.get("llm", {}) or {}).get("OPENAI_PROJECT") or os.getenv("OPENAI_PROJECT")
+    if org:  headers["OpenAI-Organization"] = org
+    if proj: headers["OpenAI-Project"]      = proj
 
     payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
-    
-    for i in range(retries):
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=20)
-            
-            if resp.status_code == 200:
-                return resp.json()["choices"][0]["message"]["content"]
-            
-            # CORRECTION ICI : Gestion du Rate Limit / Quota épuisé (429)
-            if resp.status_code == 429:
-                wait_time = (i + 1) * 3
-                if i < retries - 1:
-                    st.warning(f"⚠️ Erreur 429 (Rate Limit). Nouvelle tentative dans {wait_time}s...")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    raise RuntimeError(f"OpenAI Error 429 : Quota épuisé ou trop de requêtes.")
 
-            raise RuntimeError(f"OpenAI Error {resp.status_code}: {resp.text}")
-            
-        except requests.exceptions.RequestException as e:
-            if i == retries - 1:
-                raise RuntimeError(f"Erreur API (Réseau): {str(e)}")
-            time.sleep(2)
-            
-    raise RuntimeError("Échec inattendu de l'API OpenAI.")
+    delay = 2.0
+    last_err = ""
+    for attempt in range(retries):
+        resp = requests.post(url, headers=headers, json=payload, timeout=90)
+        if resp.status_code == 200:
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+
+        if resp.status_code in (429, 500, 502, 503, 504):
+            last_err = resp.text[:300]
+            ra = resp.headers.get("retry-after")
+            if ra:
+                try:
+                    delay = max(delay, float(ra))
+                except Exception:
+                    pass
+            time.sleep(delay + 0.2 * attempt)
+            delay = min(delay * 2, 20.0)
+            continue
+
+        raise RuntimeError(f"OpenAI HTTP {resp.status_code}: {resp.text[:300]}")
+
+    raise RuntimeError(f"OpenAI indisponible après retries. Dernier message: {last_err}")
 
 # ----------------- Outils lecture fichiers/texte -----------------
 def _extract_text_pdf_bytes(b: bytes, max_pages=MAX_PAGES) -> str:
@@ -681,21 +693,16 @@ Contraintes: style FR pro, phrases courtes, terminer par une recommandation."""}
                 st.download_button("Télécharger CSV", df.to_csv(index=False).encode("utf-8"),
                                    "resultats_cv.csv", "text/csv")
 
-# === BRIDGE WORDPRESS SÉCURISÉ ===
+# === BRIDGE WORDPRESS — À COLLER À LA FIN DE app.py ===
 import os as _os, requests as _req
 
+# Si aucun 'result' n'est produit plus haut, on en crée un minimal (affichage + envoi optionnel)
 if "result" not in locals():
     result = {"label": "OK", "score": 0.87, "lang": "fr", "theme": "light"}
+    st.json(result)  # affichage basique pour vérifier
 
-WP_BASE = os.getenv("WP_BASE", "")
-WP_TOKEN = os.getenv("WP_TOKEN", "")
-
-if not WP_BASE and os.path.exists(".streamlit/secrets.toml"):
-    try:
-        WP_BASE = st.secrets.get("WP_BASE", "")
-        WP_TOKEN = st.secrets.get("WP_TOKEN", "")
-    except:
-        pass
+WP_BASE  = _os.getenv("WP_BASE")  or st.secrets.get("WP_BASE", "")
+WP_TOKEN = _os.getenv("WP_TOKEN") or st.secrets.get("WP_TOKEN", "")
 
 if WP_BASE and WP_TOKEN:
     try:
@@ -710,4 +717,4 @@ if WP_BASE and WP_TOKEN:
     except Exception as e:
         st.caption(f"Envoi WordPress impossible : {e}")
 else:
-    st.caption("Powered by ED-dahmani Soulaimane (Alten Internship)")
+    st.caption("Powred by ED-dahmani Soulaimane (Alten Internship)")
